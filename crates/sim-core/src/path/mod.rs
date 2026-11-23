@@ -249,15 +249,14 @@ impl<K: Copy + Ord, N: Copy + Ord + core::fmt::Debug> PathRequestQueue<K, N> {
     /// most `per_search` expansions, so a tick uses at most `budget + per_search`.
     /// Requests failing `reachable` are answered as unreachable without a search.
     #[allow(clippy::too_many_arguments)]
-    pub fn process<T: Topology<Node = N>>(
+    pub fn process(
         &mut self,
-        astar: &mut AStar<N>,
-        topology: &T,
         tick: u64,
         budget: u32,
         per_search: u32,
         reachable: impl Fn(N, N) -> bool,
         path: &mut Vec<N>,
+        mut search: impl FnMut(N, N, u32, &mut Vec<N>) -> SearchOutcome,
         mut deliver: impl FnMut(&PathRequest<K, N>, SearchOutcome, &[N]),
     ) -> QueueStats {
         self.pending.sort_unstable_by_key(|r| (r.submitted, r.key));
@@ -283,7 +282,7 @@ impl<K: Copy + Ord, N: Copy + Ord + core::fmt::Debug> PathRequestQueue<K, N> {
                 );
                 continue;
             }
-            let outcome = astar.search(topology, request.start, request.goal, per_search, path);
+            let outcome = search(request.start, request.goal, per_search, path);
             remaining = remaining.saturating_sub(outcome.expansions.max(1));
             stats.searches += 1;
             stats.expansions += u64::from(outcome.expansions);
@@ -456,13 +455,12 @@ mod tests {
             let mut ticks = Vec::new();
             for tick in 3..40 {
                 let stats = queue.process(
-                    &mut astar,
-                    &topology,
                     tick,
                     60,
                     40,
                     |a, b| a.z == b.z || a.z + 1 == b.z,
                     &mut path,
+                    |a, b, limit, out| astar.search(&topology, a, b, limit, out),
                     |request, outcome, path| log.push((request.key, outcome, path.to_vec())),
                 );
                 assert!(stats.expansions <= 100);

@@ -28,10 +28,7 @@ use world::{BIOMASS_CAP, Terrain, Tile};
 
 const NEED_LIMIT: u16 = 1000;
 const HEALTH: u16 = 100;
-const EXTERNAL: EntityId = EntityId {
-    index: u32::MAX,
-    generation: u32::MAX,
-};
+const EXTERNAL: EntityId = EntityId::new(u32::MAX, u32::MAX);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JungleCommand {

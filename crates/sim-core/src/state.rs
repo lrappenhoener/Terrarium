@@ -8,8 +8,6 @@
 
 pub use sim_host::StateHasher;
 
-use crate::entity::EntityId;
-
 pub trait StateHash {
     fn state_hash(&self, hash: &mut StateHasher);
 }
@@ -74,7 +72,7 @@ impl StateHash for u128 {
     }
 }
 
-impl StateHash for EntityId {
+impl<M> StateHash for crate::entity::TypedId<M> {
     fn state_hash(&self, hash: &mut StateHasher) {
         hash.write_u64(self.to_u64());
     }

@@ -10,10 +10,7 @@ use crate::{
 };
 
 fn id(index: u32) -> EntityId {
-    EntityId {
-        index,
-        generation: 0,
-    }
+    EntityId::new(index, 0)
 }
 
 #[test]
@@ -50,10 +47,7 @@ fn component_storage_updates_and_removes_matching_generations() {
     assert_eq!(sparse.remove(id(2)), Some(20));
     assert_eq!(sparse.get(id(1)), Some(&30));
     assert_eq!(dense.get(id(2)), None);
-    let newer = EntityId {
-        generation: 1,
-        ..id(2)
-    };
+    let newer = EntityId::new(2, 1);
     assert!(dense.insert(newer, 5) && sparse.insert(newer, 5));
     assert_eq!(dense.get(id(2)), None);
     assert_eq!(sparse.remove(id(2)), None);
@@ -186,7 +180,7 @@ fn dense_slots_and_columns_survive_lifecycle_and_permutations() {
 
     for seed in [1, 2, 42] {
         let mut rng = SystemRng::new(seed, 14);
-        let mut original = EntityAllocator::with_capacity(48);
+        let mut original: EntityAllocator = EntityAllocator::with_capacity(48);
         let mut table = EntityTable::with_capacity(48);
         let mut columns = Columns::with_capacity(48);
         let mut permutation = SlotPermutation::with_capacity(48);
@@ -266,7 +260,7 @@ fn chunked_grid_retains_logical_indices_and_excludes_padding() {
 
 #[test]
 fn entity_table_rejects_an_old_generation_after_reuse() {
-    let mut table = crate::entity::EntityTable::with_capacity(1);
+    let mut table: crate::entity::EntityTable = crate::entity::EntityTable::with_capacity(1);
     let old = table.create().unwrap();
     assert_eq!(table.destroy(old), Some(0));
     let new = table.create().unwrap();

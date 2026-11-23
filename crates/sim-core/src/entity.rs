@@ -1,24 +1,85 @@
+use std::{cmp::Ordering, fmt, hash::Hash, marker::PhantomData};
+
 use serde::{Deserialize, Serialize};
 use sim_host::StateHasher;
 
 use crate::state::StateHash;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct EntityId {
+/// Generational index tagged with an entity kind, so IDs of different tables cannot
+/// be mixed up. The marker does not affect layout, ordering or serialization.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct TypedId<M> {
     pub index: u32,
     pub generation: u32,
+    #[serde(skip)]
+    marker: PhantomData<fn() -> M>,
 }
 
-impl EntityId {
+/// Marker of the untyped [`EntityId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Untyped {}
+
+pub type EntityId = TypedId<Untyped>;
+
+impl<M> TypedId<M> {
+    pub const fn new(index: u32, generation: u32) -> Self {
+        Self {
+            index,
+            generation,
+            marker: PhantomData,
+        }
+    }
+
     pub const fn to_u64(self) -> u64 {
         ((self.generation as u64) << 32) | self.index as u64
     }
 
     pub const fn from_u64(value: u64) -> Self {
-        Self {
-            index: value as u32,
-            generation: (value >> 32) as u32,
-        }
+        Self::new(value as u32, (value >> 32) as u32)
+    }
+}
+
+impl<M> Clone for TypedId<M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M> Copy for TypedId<M> {}
+
+impl<M> PartialEq for TypedId<M> {
+    fn eq(&self, other: &Self) -> bool {
+        (self.index, self.generation) == (other.index, other.generation)
+    }
+}
+
+impl<M> Eq for TypedId<M> {}
+
+impl<M> PartialOrd for TypedId<M> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<M> Ord for TypedId<M> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.index, self.generation).cmp(&(other.index, other.generation))
+    }
+}
+
+impl<M> Hash for TypedId<M> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.index, self.generation).hash(state);
+    }
+}
+
+impl<M> fmt::Debug for TypedId<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Id")
+            .field("index", &self.index)
+            .field("generation", &self.generation)
+            .finish()
     }
 }
 
@@ -27,24 +88,26 @@ struct Slot {
     alive: bool,
 }
 
-pub struct EntityAllocator {
+pub struct EntityAllocator<M = Untyped> {
     slots: Vec<Slot>,
     free: Vec<u32>,
     capacity: u32,
     len: usize,
+    marker: PhantomData<fn() -> M>,
 }
 
-impl EntityAllocator {
+impl<M> EntityAllocator<M> {
     pub fn with_capacity(capacity: u32) -> Self {
         Self {
             slots: Vec::with_capacity(capacity as usize),
             free: Vec::with_capacity(capacity as usize),
             capacity,
             len: 0,
+            marker: PhantomData,
         }
     }
 
-    pub fn create(&mut self) -> Option<EntityId> {
+    pub fn create(&mut self) -> Option<TypedId<M>> {
         let index = match self.free.pop() {
             Some(index) => index,
             None if self.slots.len() < self.capacity as usize => {
@@ -60,13 +123,10 @@ impl EntityAllocator {
         let slot = &mut self.slots[index as usize];
         slot.alive = true;
         self.len += 1;
-        Some(EntityId {
-            index,
-            generation: slot.generation,
-        })
+        Some(TypedId::new(index, slot.generation))
     }
 
-    pub fn destroy(&mut self, id: EntityId) -> bool {
+    pub fn destroy(&mut self, id: TypedId<M>) -> bool {
         if !self.is_alive(id) {
             return false;
         }
@@ -80,7 +140,7 @@ impl EntityAllocator {
         true
     }
 
-    pub fn is_alive(&self, id: EntityId) -> bool {
+    pub fn is_alive(&self, id: TypedId<M>) -> bool {
         self.slots
             .get(id.index as usize)
             .is_some_and(|slot| slot.alive && slot.generation == id.generation)
@@ -94,15 +154,12 @@ impl EntityAllocator {
         self.len == 0
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = EntityId> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = TypedId<M>> + '_ {
         self.slots
             .iter()
             .enumerate()
             .filter(|(_, slot)| slot.alive)
-            .map(|(index, slot)| EntityId {
-                index: index as u32,
-                generation: slot.generation,
-            })
+            .map(|(index, slot)| TypedId::new(index as u32, slot.generation))
     }
 
     /// Hashes ID history. The caller hashes allocation capacity as configuration.
@@ -165,12 +222,12 @@ impl<T> DenseStorage<T> {
     }
 }
 
-pub struct SparseStorage<T> {
+pub struct SparseStorage<T, M = Untyped> {
     indices: Vec<usize>,
-    dense: Vec<(EntityId, T)>,
+    dense: Vec<(TypedId<M>, T)>,
 }
 
-impl<T> SparseStorage<T> {
+impl<T, M> SparseStorage<T, M> {
     pub fn with_capacity(capacity: u32) -> Self {
         Self {
             indices: vec![usize::MAX; capacity as usize],
@@ -178,7 +235,7 @@ impl<T> SparseStorage<T> {
         }
     }
 
-    pub fn insert(&mut self, id: EntityId, value: T) -> bool {
+    pub fn insert(&mut self, id: TypedId<M>, value: T) -> bool {
         let Some(index) = self.indices.get_mut(id.index as usize) else {
             return false;
         };
@@ -194,12 +251,12 @@ impl<T> SparseStorage<T> {
         true
     }
 
-    pub fn get(&self, id: EntityId) -> Option<&T> {
+    pub fn get(&self, id: TypedId<M>) -> Option<&T> {
         let (current, value) = self.dense.get(*self.indices.get(id.index as usize)?)?;
         (*current == id).then_some(value)
     }
 
-    pub fn remove(&mut self, id: EntityId) -> Option<T> {
+    pub fn remove(&mut self, id: TypedId<M>) -> Option<T> {
         self.get(id)?;
         let index = std::mem::replace(&mut self.indices[id.index as usize], usize::MAX);
         let (_, value) = self.dense.swap_remove(index);
@@ -209,7 +266,7 @@ impl<T> SparseStorage<T> {
         Some(value)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (EntityId, &T)> {
+    pub fn iter(&self) -> impl Iterator<Item = (TypedId<M>, &T)> {
         self.dense.iter().map(|(id, value)| (*id, value))
     }
 
@@ -222,14 +279,14 @@ impl<T> SparseStorage<T> {
     }
 
     /// Entries in ascending ID order, independent of insertion and removal history.
-    pub fn sorted(&self) -> Vec<(EntityId, &T)> {
+    pub fn sorted(&self) -> Vec<(TypedId<M>, &T)> {
         let mut entries: Vec<_> = self.iter().collect();
         entries.sort_unstable_by_key(|&(id, _)| id);
         entries
     }
 }
 
-impl<T: StateHash> SparseStorage<T> {
+impl<T: StateHash, M> SparseStorage<T, M> {
     /// Writes the entry count, then each ID and value in ascending ID order.
     pub fn hash_state(&self, hash: &mut StateHasher) {
         let entries = self.sorted();
@@ -241,9 +298,9 @@ impl<T: StateHash> SparseStorage<T> {
     }
 }
 
-impl<T: Clone> SparseStorage<T> {
+impl<T: Clone, M> SparseStorage<T, M> {
     /// Snapshot entries in ascending ID order.
-    pub fn snapshot_entries(&self) -> Vec<(EntityId, T)> {
+    pub fn snapshot_entries(&self) -> Vec<(TypedId<M>, T)> {
         self.sorted()
             .into_iter()
             .map(|(id, value)| (id, value.clone()))
@@ -251,9 +308,9 @@ impl<T: Clone> SparseStorage<T> {
     }
 }
 
-impl<T> SparseStorage<T> {
+impl<T, M> SparseStorage<T, M> {
     /// Restores strictly ascending entries whose IDs fit the capacity.
-    pub fn restore(capacity: u32, entries: Vec<(EntityId, T)>) -> Option<Self> {
+    pub fn restore(capacity: u32, entries: Vec<(TypedId<M>, T)>) -> Option<Self> {
         if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return None;
         }
@@ -267,7 +324,7 @@ impl<T> SparseStorage<T> {
     }
 }
 
-impl<T: std::fmt::Debug> SparseStorage<T> {
+impl<T: std::fmt::Debug, M> SparseStorage<T, M> {
     /// Writes `prefix:index:generation<TAB>value` lines in ascending ID order.
     pub fn dump(&self, prefix: &str, out: &mut String) {
         use std::fmt::Write as _;
@@ -282,11 +339,11 @@ pub enum EntityCommand<T> {
     Despawn(EntityId),
 }
 
-pub struct EntityCommandBuffer<T> {
-    entries: Vec<(EntityId, u32, EntityCommand<T>)>,
+pub struct EntityCommandBuffer<T, S = EntityId> {
+    entries: Vec<(S, u32, EntityCommand<T>)>,
 }
 
-impl<T> EntityCommandBuffer<T> {
+impl<T, S: Ord + Copy> EntityCommandBuffer<T, S> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: Vec::with_capacity(capacity),
@@ -294,7 +351,7 @@ impl<T> EntityCommandBuffer<T> {
     }
 
     /// The caller assigns a unique ordinal per source, independent of collection order.
-    pub fn push(&mut self, source: EntityId, ordinal: u32, command: EntityCommand<T>) {
+    pub fn push(&mut self, source: S, ordinal: u32, command: EntityCommand<T>) {
         self.entries.push((source, ordinal, command));
     }
 
@@ -313,13 +370,13 @@ pub struct AllocatorState {
 }
 
 /// Maps stable generational IDs to dense, transient component slots.
-pub struct EntityTable {
-    allocator: EntityAllocator,
+pub struct EntityTable<M = Untyped> {
+    allocator: EntityAllocator<M>,
     by_index: Vec<u32>,
-    by_slot: Vec<EntityId>,
+    by_slot: Vec<TypedId<M>>,
 }
 
-impl EntityTable {
+impl<M> EntityTable<M> {
     pub fn with_capacity(capacity: u32) -> Self {
         Self {
             allocator: EntityAllocator::with_capacity(capacity),
@@ -328,7 +385,7 @@ impl EntityTable {
         }
     }
 
-    pub fn create(&mut self) -> Option<EntityId> {
+    pub fn create(&mut self) -> Option<TypedId<M>> {
         let id = self.allocator.create()?;
         self.by_index[id.index as usize] = self.by_slot.len() as u32;
         self.by_slot.push(id);
@@ -336,7 +393,7 @@ impl EntityTable {
     }
 
     /// Removes the ID and returns the slot to swap-remove from component columns.
-    pub fn destroy(&mut self, id: EntityId) -> Option<u32> {
+    pub fn destroy(&mut self, id: TypedId<M>) -> Option<u32> {
         let slot = self.slot(id)?;
         self.allocator.destroy(id);
         self.by_slot.swap_remove(slot as usize);
@@ -347,16 +404,16 @@ impl EntityTable {
         Some(slot)
     }
 
-    pub fn slot(&self, id: EntityId) -> Option<u32> {
+    pub fn slot(&self, id: TypedId<M>) -> Option<u32> {
         let &slot = self.by_index.get(id.index as usize)?;
         (self.by_slot.get(slot as usize) == Some(&id)).then_some(slot)
     }
 
-    pub fn id(&self, slot: u32) -> Option<EntityId> {
+    pub fn id(&self, slot: u32) -> Option<TypedId<M>> {
         self.by_slot.get(slot as usize).copied()
     }
 
-    pub fn is_alive(&self, id: EntityId) -> bool {
+    pub fn is_alive(&self, id: TypedId<M>) -> bool {
         self.slot(id).is_some()
     }
 
@@ -368,11 +425,11 @@ impl EntityTable {
         self.by_slot.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = EntityId> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = TypedId<M>> + '_ {
         self.by_slot.iter().copied()
     }
 
-    pub fn iter_by_id(&self) -> impl Iterator<Item = EntityId> + '_ {
+    pub fn iter_by_id(&self) -> impl Iterator<Item = TypedId<M>> + '_ {
         self.allocator.iter()
     }
 
@@ -396,7 +453,7 @@ impl EntityTable {
     pub fn restore_state(
         capacity: u32,
         state: AllocatorState,
-        live: impl IntoIterator<Item = EntityId>,
+        live: impl IntoIterator<Item = TypedId<M>>,
     ) -> Option<Self> {
         if state.generations.len() > capacity as usize || state.free.len() > state.generations.len()
         {
