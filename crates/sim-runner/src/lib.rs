@@ -1,7 +1,10 @@
 //! Game-independent execution, timing, and determinism verification.
 
 mod input;
+mod options;
+mod profile;
 mod report;
+mod trace;
 
 use std::{
     error::Error,
@@ -11,11 +14,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sim_host::{SimError, SimMetrics, Simulation};
+use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 use thiserror::Error;
 
-use input::{ScheduleEntry, load_schedule, read_input};
+use input::{ScheduleEntry, load_schedule};
+pub use options::parse_sweep;
+pub use profile::PhaseReport;
+use profile::{PhaseSeries, Recorder};
 pub use report::{LatencyStats, RunReport};
+use trace::Trace;
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
@@ -37,8 +44,17 @@ pub enum RunnerError {
     Sim(#[from] SimError),
     #[error("invariant violation at tick {tick}: {message}")]
     InvariantViolation { tick: u64, message: String },
-    #[error("determinism mismatch at tick {tick}: {first:#018x} vs {second:#018x}")]
-    DeterminismMismatch { tick: u64, first: u64, second: u64 },
+    #[error("determinism mismatch at tick {tick}: {first:#018x} vs {second:#018x}; differing subsystems: {}", .subsystems.join(", "))]
+    DeterminismMismatch {
+        tick: u64,
+        first: u64,
+        second: u64,
+        subsystems: Vec<&'static str>,
+    },
+    #[error("tick {tick} made {count} allocations (maximum {limit})")]
+    AllocationLimit { tick: u64, count: u64, limit: u64 },
+    #[error("invalid options: {0}")]
+    InvalidOptions(String),
     #[error("simulation contract violation: {0}")]
     ContractViolation(String),
     #[error("unknown game: {0}")]
@@ -68,27 +84,76 @@ pub struct RunOptions {
     pub report_interval: Option<u64>,
     pub dump_hashes: Option<PathBuf>,
     pub report_format: ReportFormat,
+    pub overrides: Vec<String>,
+    pub telemetry: TelemetryOptions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub type StepAllocationCounter = fn(&mut dyn FnMut()) -> u64;
+
+#[derive(Debug, Clone)]
+pub struct TelemetryOptions {
+    pub profile_phases: bool,
+    pub allocation_counter: Option<StepAllocationCounter>,
+    pub max_step_allocs: Option<u64>,
+    pub alloc_warmup: u64,
+    pub trace_ids: Vec<u64>,
+    pub trace_every: u64,
+    pub trace_out: Option<PathBuf>,
+}
+
+impl Default for TelemetryOptions {
+    fn default() -> Self {
+        Self {
+            profile_phases: false,
+            allocation_counter: None,
+            max_step_allocs: None,
+            alloc_warmup: 10,
+            trace_ids: Vec::new(),
+            trace_every: 1,
+            trace_out: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 struct Checkpoint {
     tick: u64,
     hash: u64,
+    active: usize,
+    subsystems: Vec<(&'static str, u64)>,
 }
 
 struct CompletedRun {
-    final_checkpoint: Checkpoint,
+    tick: u64,
+    hash: u64,
     checkpoints: Vec<Checkpoint>,
     latencies: Vec<u64>,
     wall_time: Duration,
     metrics: SimMetrics,
+    phases: Vec<PhaseSeries>,
+    step_allocations_total: u128,
+    step_allocations_max: u64,
 }
 
 pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, RunnerError> {
-    let config = match &opts.config {
-        Some(path) => read_input::<S::Config>(path)?,
-        None => S::Config::default(),
-    };
+    let telemetry = &opts.telemetry;
+    if telemetry.max_step_allocs.is_some() && telemetry.allocation_counter.is_none() {
+        return Err(RunnerError::InvalidOptions(
+            "an allocation limit requires an allocation counter".into(),
+        ));
+    }
+    if telemetry.trace_ids.is_empty() == telemetry.trace_out.is_some() || telemetry.trace_every == 0
+    {
+        return Err(RunnerError::InvalidOptions(
+            "traces require both --trace-entity and --trace-out, and a positive interval".into(),
+        ));
+    }
+    if telemetry.trace_out.is_some() && telemetry.trace_out == opts.dump_hashes {
+        return Err(RunnerError::InvalidOptions(
+            "trace and CSV output paths must differ".into(),
+        ));
+    }
+    let config = options::load_config::<S::Config>(opts.config.as_deref(), &opts.overrides)?;
     let mut diagnostics = io::stderr().lock();
     let schedule = match &opts.commands {
         Some(path) => load_schedule::<S::Command>(path, opts.ticks, &mut diagnostics)?,
@@ -100,13 +165,25 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     if let Some(path) = &opts.dump_hashes {
         dump_hashes(path, &first.checkpoints)?;
     }
-    let step_total_seconds = first
+    let total_ns = first
         .latencies
         .iter()
         .map(|&ns| u128::from(ns))
-        .sum::<u128>() as f64
-        / 1_000_000_000.0;
+        .sum::<u128>() as f64;
+    let step_total_seconds = total_ns / 1_000_000_000.0;
     let ticks_executed = first.latencies.len() as u64;
+    let average_active_entities = first
+        .checkpoints
+        .iter()
+        .map(|checkpoint| checkpoint.active as f64)
+        .sum::<f64>()
+        / first.checkpoints.len() as f64;
+    let entity_ticks = average_active_entities * ticks_executed as f64;
+    let phases = first
+        .phases
+        .into_iter()
+        .map(|series| series.report(total_ns))
+        .collect();
     let latency_us = LatencyStats::from_samples(&mut first.latencies);
     drop(first.latencies);
 
@@ -117,7 +194,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     } else {
         None
     };
-    let tick = first.final_checkpoint.tick;
+    let tick = first.tick;
     Ok(RunReport {
         tick,
         ticks_executed,
@@ -128,8 +205,17 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         latency_us,
         active_entities: first.metrics.active_entities,
         custom_gauges: first.metrics.custom_gauges,
-        state_hash: format!("{:#018x}", first.final_checkpoint.hash),
+        state_hash: format!("{:#018x}", first.hash),
         verified_checkpoints,
+        average_active_entities,
+        ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
+        phases,
+        step_allocations_total: telemetry
+            .allocation_counter
+            .map(|_| first.step_allocations_total),
+        step_allocations_max: telemetry
+            .allocation_counter
+            .map(|_| first.step_allocations_max),
     })
 }
 
@@ -152,6 +238,24 @@ fn run_once<S: Simulation>(
     let mut remaining = &schedule[schedule.partition_point(|entry| entry.tick < tick)..];
     let report_interval = opts.report_interval.unwrap_or(0);
 
+    let telemetry = &opts.telemetry;
+    let mut trace = telemetry
+        .trace_out
+        .as_deref()
+        .filter(|_| diagnostics.is_some())
+        .map(|path| Trace::new(path, &telemetry.trace_ids))
+        .transpose()?;
+    if let Some(trace) = &mut trace {
+        trace.observe(&sim)?;
+    }
+    let initial_tick = tick;
+    let mut recorder = Recorder::new();
+    let profile = telemetry.profile_phases && diagnostics.is_some();
+    let mut noop = NoopProbe;
+    let mut phases = Vec::new();
+    let mut step_allocations_total = 0;
+    let mut step_allocations_max = 0;
+
     while tick < opts.ticks && !sim.is_finished() {
         let commands = match remaining.split_first() {
             Some((entry, rest)) if entry.tick == tick => {
@@ -160,10 +264,25 @@ fn run_once<S: Simulation>(
             }
             _ => &[],
         };
-        let start = Instant::now();
-        sim.step(commands);
-        let elapsed = start.elapsed();
-        latencies.push(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+        let mut elapsed = 0;
+        let probe: &mut dyn PhaseProbe = if profile { &mut recorder } else { &mut noop };
+        let mut step = || {
+            let start = Instant::now();
+            sim.step_profiled(commands, probe);
+            elapsed = nanoseconds(start.elapsed());
+        };
+        let allocations = if let Some(count) = telemetry.allocation_counter {
+            count(&mut step)
+        } else {
+            step();
+            0
+        };
+        latencies.push(elapsed);
+        step_allocations_total += u128::from(allocations);
+        step_allocations_max = step_allocations_max.max(allocations);
+        if profile {
+            recorder.flush(&mut phases, opts.ticks)?;
+        }
 
         let next = sim.tick();
         if next != tick + 1 {
@@ -173,6 +292,21 @@ fn run_once<S: Simulation>(
             )));
         }
         tick = next;
+        if let Some(limit) = telemetry.max_step_allocs
+            && tick - initial_tick > telemetry.alloc_warmup
+            && allocations > limit
+        {
+            return Err(RunnerError::AllocationLimit {
+                tick,
+                count: allocations,
+                limit,
+            });
+        }
+        if let Some(trace) = &mut trace
+            && due(tick, telemetry.trace_every)
+        {
+            trace.observe(&sim)?;
+        }
         if due(tick, opts.check_invariants_every) {
             check_invariants(&sim, tick)?;
         }
@@ -181,32 +315,54 @@ fn run_once<S: Simulation>(
         let report_due = diagnostics.is_some() && due(tick, report_interval);
         if checkpoint_due || report_due {
             let hash = sim.state_hash();
+            let metrics = sim.metrics();
             if checkpoint_due {
-                checkpoints.push(Checkpoint { tick, hash });
+                checkpoints.push(checkpoint(&sim, tick, hash, metrics.active_entities));
             }
             if let Some(writer) = diagnostics.as_deref_mut().filter(|_| report_due) {
-                write_progress(writer, tick, hash, &sim.metrics())?;
+                write_progress(writer, tick, hash, &metrics)?;
             }
         }
     }
 
     check_invariants(&sim, tick)?;
-    let final_checkpoint = Checkpoint {
-        tick,
-        hash: sim.state_hash(),
-    };
-    match checkpoints.last_mut() {
-        Some(last) if last.tick == tick => *last = final_checkpoint,
-        _ => checkpoints.push(final_checkpoint),
-    }
+    let hash = sim.state_hash();
     let metrics = sim.metrics();
+    if checkpoints.last().is_none_or(|last| last.tick != tick) {
+        checkpoints.push(checkpoint(&sim, tick, hash, metrics.active_entities));
+    }
+    if let Some(trace) = &mut trace {
+        if tick != initial_tick && !due(tick, telemetry.trace_every) {
+            trace.observe(&sim)?;
+        }
+        trace.finish()?;
+    }
     Ok(CompletedRun {
-        final_checkpoint,
+        tick,
+        hash,
         checkpoints,
         latencies,
         wall_time: wall_start.elapsed(),
         metrics,
+        phases,
+        step_allocations_total,
+        step_allocations_max,
     })
+}
+
+fn checkpoint<S: Simulation>(sim: &S, tick: u64, hash: u64, active: usize) -> Checkpoint {
+    let mut subsystems = sim.subsystem_hashes();
+    subsystems.sort_unstable_by_key(|&(name, value)| (name, value));
+    Checkpoint {
+        tick,
+        hash,
+        active,
+        subsystems,
+    }
+}
+
+pub(crate) fn nanoseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn due(tick: u64, interval: u64) -> bool {
@@ -237,7 +393,10 @@ fn check_invariants<S: Simulation>(sim: &S, tick: u64) -> Result<(), RunnerError
 }
 
 fn verify_checkpoints(first: &[Checkpoint], second: &[Checkpoint]) -> Result<(), RunnerError> {
-    let different_pair = first.iter().zip(second).find(|(a, b)| a != b);
+    let different_pair = first
+        .iter()
+        .zip(second)
+        .find(|(a, b)| a.tick != b.tick || a.hash != b.hash || a.subsystems != b.subsystems);
     let different_lengths = || {
         if first.len() != second.len() {
             first.last().zip(second.last())
@@ -250,6 +409,22 @@ fn verify_checkpoints(first: &[Checkpoint], second: &[Checkpoint]) -> Result<(),
             tick: a.tick.min(b.tick),
             first: a.hash,
             second: b.hash,
+            subsystems: {
+                let mut different: Vec<_> = a
+                    .subsystems
+                    .iter()
+                    .filter(|entry| !b.subsystems.contains(entry))
+                    .chain(
+                        b.subsystems
+                            .iter()
+                            .filter(|entry| !a.subsystems.contains(entry)),
+                    )
+                    .map(|&(name, _)| name)
+                    .collect();
+                different.sort_unstable();
+                different.dedup();
+                different
+            },
         });
     }
     Ok(())

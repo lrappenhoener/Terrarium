@@ -100,3 +100,50 @@ fn lists_games_and_uses_the_general_failure_exit_code() {
         assert!(!output.stderr.is_empty());
     }
 }
+
+#[test]
+fn jungle_sweep_exports_each_run_and_uses_nested_overrides() {
+    let output = cli()
+        .args([
+            "--game",
+            "jungle",
+            "--ticks",
+            "8",
+            "--set",
+            "world_size=16",
+            "--set",
+            "initial_predators=2",
+            "--set",
+            "predator.perception_radius=8",
+            "--sweep",
+            "initial_herbivores=3,5",
+            "--profile-phases",
+            "--max-step-allocs",
+            "0",
+            "--alloc-warmup",
+            "0",
+            "--report-format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sweep: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(sweep["key"], "initial_herbivores");
+    assert_eq!(sweep["rows"][0]["active_entities"], 5);
+    assert_eq!(sweep["rows"][1]["active_entities"], 7);
+    assert_eq!(sweep["rows"][0]["step_allocations_total"], 0);
+    assert_eq!(sweep["rows"][1]["phases"].as_array().unwrap().len(), 7);
+
+    let typo = cli()
+        .args(["--game", "jungle", "--set", "predator.typo=8"])
+        .output()
+        .unwrap();
+    assert_eq!(typo.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&typo.stderr).contains("typo"));
+}

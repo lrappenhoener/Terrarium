@@ -1,4 +1,5 @@
 mod games;
+mod sweep;
 
 use std::{
     io::{self, Write},
@@ -8,7 +9,7 @@ use std::{
 
 use clap::Parser;
 use sim_host::SimError;
-use sim_runner::{ReportFormat, RunOptions, RunnerError};
+use sim_runner::{ReportFormat, RunOptions, RunnerError, TelemetryOptions};
 
 #[derive(Parser)]
 #[command(version, about = "Run and verify deterministic headless simulations")]
@@ -45,6 +46,22 @@ struct Cli {
     dump_hashes: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "text")]
     report_format: ReportFormat,
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    overrides: Vec<String>,
+    #[arg(long, value_name = "KEY=V1,V2,...")]
+    sweep: Option<String>,
+    #[arg(long)]
+    profile_phases: bool,
+    #[arg(long)]
+    max_step_allocs: Option<u64>,
+    #[arg(long, default_value_t = 10)]
+    alloc_warmup: u64,
+    #[arg(long = "trace-entity", value_name = "ID")]
+    trace_ids: Vec<u64>,
+    #[arg(long, default_value_t = 1)]
+    trace_every: u64,
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
 }
 
 impl From<Cli> for RunOptions {
@@ -62,13 +79,28 @@ impl From<Cli> for RunOptions {
             report_interval: cli.report_interval,
             dump_hashes: cli.dump_hashes,
             report_format: cli.report_format,
+            overrides: cli.overrides,
+            telemetry: TelemetryOptions {
+                profile_phases: cli.profile_phases,
+                allocation_counter: Some(count_step_allocations),
+                max_step_allocs: cli.max_step_allocs,
+                alloc_warmup: cli.alloc_warmup,
+                trace_ids: cli.trace_ids,
+                trace_every: cli.trace_every,
+                trace_out: cli.trace_out,
+            },
         }
     }
 }
 
+// Linking allocation-counter here installs its global allocator for the CLI.
+fn count_step_allocations(step: &mut dyn FnMut()) -> u64 {
+    allocation_counter::measure(step).count_total
+}
+
 fn main() -> ExitCode {
-    let opts = match Cli::try_parse() {
-        Ok(cli) => cli.into(),
+    let mut cli = match Cli::try_parse() {
+        Ok(cli) => cli,
         Err(error) => {
             let _ = error.print();
             return if error.use_stderr() {
@@ -79,21 +111,27 @@ fn main() -> ExitCode {
         }
     };
 
-    match execute(&opts) {
+    let sweep = cli.sweep.take();
+    match execute(&cli.into(), sweep.as_deref()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let _ = writeln!(io::stderr().lock(), "Fehler: {error}");
-            match error {
-                RunnerError::DeterminismMismatch { .. } => ExitCode::from(2),
-                RunnerError::InvariantViolation { .. }
-                | RunnerError::Sim(SimError::InvariantViolation(_)) => ExitCode::from(3),
-                _ => ExitCode::FAILURE,
-            }
+            exit_code(&error)
         }
     }
 }
 
-fn execute(opts: &RunOptions) -> Result<(), RunnerError> {
+fn exit_code(error: &RunnerError) -> ExitCode {
+    match error {
+        RunnerError::DeterminismMismatch { .. } => ExitCode::from(2),
+        RunnerError::InvariantViolation { .. }
+        | RunnerError::Sim(SimError::InvariantViolation(_)) => ExitCode::from(3),
+        RunnerError::AllocationLimit { .. } => ExitCode::from(4),
+        _ => ExitCode::FAILURE,
+    }
+}
+
+fn execute(opts: &RunOptions, sweep: Option<&str>) -> Result<(), RunnerError> {
     let output_error = |source| RunnerError::Io {
         context: "stdout".into(),
         source,
@@ -110,6 +148,9 @@ fn execute(opts: &RunOptions) -> Result<(), RunnerError> {
         .iter()
         .find(|entry| entry.name == opts.game)
         .ok_or_else(|| RunnerError::UnknownGame(opts.game.clone()))?;
+    if let Some(sweep) = sweep {
+        return sweep::execute(game, opts, sweep);
+    }
     let report = (game.run)(opts)?;
     let mut output = io::stdout().lock();
     match opts.report_format {
@@ -121,4 +162,20 @@ fn execute(opts: &RunOptions) -> Result<(), RunnerError> {
         }
     }
     output.flush().map_err(output_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn allocation_limit_has_its_own_exit_code() {
+        assert_eq!(
+            exit_code(&RunnerError::AllocationLimit {
+                tick: 11,
+                count: 1,
+                limit: 0
+            }),
+            ExitCode::from(4)
+        );
+    }
 }

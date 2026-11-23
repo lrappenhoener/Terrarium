@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sim_host::{SimError, SimMetrics, Simulation, StateHasher};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DummyConfig {
     pub world_width: f64,
     pub world_height: f64,

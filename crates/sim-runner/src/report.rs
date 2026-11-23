@@ -2,6 +2,8 @@ use std::fmt::{self, Display};
 
 use serde::Serialize;
 
+use crate::PhaseReport;
+
 #[derive(Debug, Serialize)]
 pub struct RunReport {
     pub tick: u64,
@@ -15,6 +17,11 @@ pub struct RunReport {
     pub custom_gauges: Vec<(String, f64)>,
     pub state_hash: String,
     pub verified_checkpoints: Option<usize>,
+    pub average_active_entities: f64,
+    pub ns_per_active_entity_tick: Option<f64>,
+    pub phases: Vec<PhaseReport>,
+    pub step_allocations_total: Option<u128>,
+    pub step_allocations_max: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,7 +47,7 @@ impl LatencyStats {
     }
 }
 
-fn nearest_rank(sorted: &[u64], percentile: u32) -> Option<u64> {
+pub(crate) fn nearest_rank(sorted: &[u64], percentile: u32) -> Option<u64> {
     let rank = (sorted.len() as u128 * u128::from(percentile)).div_ceil(100) as usize;
     sorted.get(rank.checked_sub(1)?).copied()
 }
@@ -67,6 +74,30 @@ impl Display for RunReport {
             writeln!(f, "Tick-Latenz (µs) n/a")?;
         }
         writeln!(f, "active_entities {}", self.active_entities)?;
+        writeln!(
+            f,
+            "Durchschnittlich aktive Entitäten {:.2}",
+            self.average_active_entities
+        )?;
+        match self.ns_per_active_entity_tick {
+            Some(value) => writeln!(f, "ns pro aktiver Entität und Tick {value:.2}")?,
+            None => writeln!(f, "ns pro aktiver Entität und Tick n/a")?,
+        }
+        if let Some((total, max)) = self.step_allocations_total.zip(self.step_allocations_max) {
+            writeln!(
+                f,
+                "Step-Allokationen {total} gesamt, {max} maximal pro Tick"
+            )?;
+        } else {
+            writeln!(f, "Step-Allokationen n/a")?;
+        }
+        for phase in &self.phases {
+            writeln!(
+                f,
+                "Phase {} (µs) | p50 {:.2} | p99 {:.2} | Max {:.2} | Anteil {:.2} %",
+                phase.name, phase.p50_us, phase.p99_us, phase.max_us, phase.share_percent
+            )?;
+        }
         for (name, value) in &self.custom_gauges {
             writeln!(f, "{name} {value:.2}")?;
         }

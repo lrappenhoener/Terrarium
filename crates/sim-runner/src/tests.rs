@@ -55,6 +55,26 @@ impl<const UNSTABLE: bool> Simulation for TestSim<UNSTABLE> {
         self.tick += self.config.tick_increment;
     }
 
+    fn step_profiled(&mut self, commands: &[usize], probe: &mut dyn PhaseProbe) {
+        probe.enter("advance");
+        self.step(commands);
+        if ALLOCATE.with(std::cell::Cell::get) {
+            std::hint::black_box(vec![self.tick; 11]);
+        }
+        probe.exit("advance");
+        probe.enter("other");
+        std::hint::black_box(self.tick);
+        probe.exit("other");
+    }
+
+    fn subsystem_hashes(&self) -> Vec<(&'static str, u64)> {
+        vec![("a", self.tick), ("b", self.nonce)]
+    }
+
+    fn describe_entity(&self, id: u64) -> Option<Vec<(String, String)>> {
+        (id == 7 && self.tick < 2).then(|| vec![("age".into(), self.tick.to_string())])
+    }
+
     fn tick(&self) -> u64 {
         self.tick
     }
@@ -90,6 +110,10 @@ impl<const UNSTABLE: bool> Simulation for TestSim<UNSTABLE> {
 
 type StableSim = TestSim<false>;
 
+thread_local! {
+    static ALLOCATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn options() -> RunOptions {
     RunOptions {
         game: "test".into(),
@@ -104,6 +128,8 @@ fn options() -> RunOptions {
         report_interval: None,
         dump_hashes: None,
         report_format: ReportFormat::Text,
+        overrides: vec![],
+        telemetry: TelemetryOptions::default(),
     }
 }
 
@@ -116,20 +142,32 @@ fn detects_nondeterminism_at_the_first_checkpoint() {
     let result = run_simulation::<TestSim<true>>(&opts);
     assert!(matches!(
         result,
-        Err(RunnerError::DeterminismMismatch { tick: 2, first, second }) if first != second
+        Err(RunnerError::DeterminismMismatch { tick: 2, first, second, .. }) if first != second
     ));
 }
 
 #[test]
 fn mismatched_checkpoint_lists_include_both_real_hashes() {
-    let first = [Checkpoint { tick: 2, hash: 10 }];
-    let second = [first[0], Checkpoint { tick: 4, hash: 20 }];
+    let first = [Checkpoint {
+        tick: 2,
+        hash: 10,
+        ..Checkpoint::default()
+    }];
+    let second = [
+        first[0].clone(),
+        Checkpoint {
+            tick: 4,
+            hash: 20,
+            ..Checkpoint::default()
+        },
+    ];
     assert!(matches!(
         verify_checkpoints(&first, &second),
         Err(RunnerError::DeterminismMismatch {
             tick: 2,
             first: 10,
-            second: 20
+            second: 20,
+            ..
         })
     ));
     assert!(matches!(
@@ -137,7 +175,8 @@ fn mismatched_checkpoint_lists_include_both_real_hashes() {
         Err(RunnerError::DeterminismMismatch {
             tick: 2,
             first: 10,
-            second: 20
+            second: 20,
+            ..
         })
     ));
 }
@@ -234,4 +273,70 @@ fn zero_ticks_has_only_a_final_hash_and_no_latency_statistics() {
     assert!(report.latency_us.is_none());
     assert!(report.to_string().contains("Tick-Latenz (µs) n/a"));
     assert_eq!(report.verified_checkpoints, Some(1));
+}
+
+#[test]
+fn phase_report_contains_both_phases_and_counters_exclude_probe_work() {
+    let mut opts = options();
+    opts.telemetry.profile_phases = true;
+    opts.telemetry.allocation_counter = Some(|step| allocation_counter::measure(step).count_total);
+    ALLOCATE.set(true);
+    let report = run_simulation::<StableSim>(&opts).unwrap();
+    assert_eq!(
+        report
+            .phases
+            .iter()
+            .map(|phase| phase.name)
+            .collect::<Vec<_>>(),
+        ["advance", "other"]
+    );
+    assert_eq!(report.step_allocations_total, Some(3));
+    assert_eq!(report.step_allocations_max, Some(1));
+
+    opts.telemetry.alloc_warmup = 1;
+    opts.telemetry.max_step_allocs = Some(0);
+    let failure = run_simulation::<StableSim>(&opts);
+    ALLOCATE.set(false);
+    assert!(matches!(
+        failure,
+        Err(RunnerError::AllocationLimit {
+            tick: 2,
+            count: 1,
+            limit: 0
+        })
+    ));
+}
+
+#[test]
+fn mismatch_identifies_only_the_subsystem_that_differs() {
+    let opts = RunOptions {
+        verify_determinism: true,
+        ..options()
+    };
+    let error = run_simulation::<TestSim<true>>(&opts).unwrap_err();
+    assert!(error.to_string().ends_with("differing subsystems: b"));
+}
+
+#[test]
+fn trace_writes_null_once_when_an_entity_dies() {
+    let path =
+        std::env::temp_dir().join(format!("terrarium-trace-test-{}.jsonl", std::process::id()));
+    let mut opts = options();
+    opts.telemetry.trace_ids = vec![7, 7];
+    opts.telemetry.trace_out = Some(path.clone());
+    opts.verify_determinism = true;
+    run_simulation::<StableSim>(&opts).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0]["fields"]["age"], "0");
+    assert_eq!(lines[1]["fields"]["age"], "1");
+    assert_eq!(
+        lines[2],
+        serde_json::json!({"tick": 2, "entity": 7, "fields": null})
+    );
 }
