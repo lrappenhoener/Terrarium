@@ -86,6 +86,23 @@ sim_core::entity_columns! {
     struct AnimalColumns { position: Point, vitals: Vitals }
 }
 
+fn spatial_entries<'a>(
+    table: &'a EntityTable,
+    columns: &'a AnimalColumns,
+) -> impl Iterator<Item = (SpatialHit, Point, u8)> + Clone + 'a {
+    (0..table.len()).filter_map(move |slot| {
+        let id = table.id(slot as u32)?;
+        Some((
+            SpatialHit {
+                id,
+                slot: slot as u32,
+            },
+            columns.position[slot],
+            columns.vitals[slot].species as u8,
+        ))
+    })
+}
+
 pub struct JungleSim {
     config: JungleConfig,
     seed: u64,
@@ -100,7 +117,7 @@ pub struct JungleSim {
     hunting: SparseStorage<EntityId>,
     pregnant: SparseStorage<u64>,
     spatial: SpatialIndex,
-    locations: Vec<(SpatialHit, Point)>,
+    locations: Vec<(SpatialHit, Point, u8)>,
     nearby: Vec<SpatialHit>,
     decisions: Vec<(EntityId, Decision)>,
     moves: IntentBuffer<Point, ()>,
@@ -182,21 +199,8 @@ impl JungleSim {
 
     fn rebuild_spatial(&mut self) {
         self.locations.clear();
-        self.locations.extend(
-            self.allocator
-                .iter()
-                .zip(self.columns.position.iter().copied())
-                .enumerate()
-                .map(|(slot, (id, point))| {
-                    (
-                        SpatialHit {
-                            id,
-                            slot: slot as u32,
-                        },
-                        point,
-                    )
-                }),
-        );
+        self.locations
+            .extend(spatial_entries(&self.allocator, &self.columns));
         self.spatial.rebuild(self.locations.iter().copied());
     }
 
@@ -559,7 +563,7 @@ impl Simulation for JungleSim {
         }
         let occupied = ChunkedGrid2::new(size, size, None)
             .ok_or_else(|| SimError::InvalidConfig("could not reserve occupancy".into()))?;
-        let spatial = SpatialIndex::new(size, size, 8, n)
+        let spatial = SpatialIndex::new(size, size, 8, 2, n)
             .ok_or_else(|| SimError::InvalidConfig("could not reserve spatial index".into()))?;
         let mut sim = Self {
             growth: config.plant_regrowth_per_mille,

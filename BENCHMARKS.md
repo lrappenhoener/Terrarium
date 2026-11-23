@@ -59,3 +59,17 @@ Jungle mit Seed 42 und Standardkonfiguration, Hashformat `jungle-logical-v1`. Du
 | 5 · Morton-Umsortierung | 512 | 12686.000 | 102.992 | 75.732 | 0.080 | 21.586 | 3163.664 |
 | 5 · Morton-Umsortierung | 1024 | 50670.150 | 140.837 | 102.108 | 0.248 | 22.196 | 12625.815 |
 | 5 · Morton-Umsortierung | 2048 | 195779.000 | 203.779 | 144.639 | 0.301 | 19.854 | 48734.404 |
+
+## Schritt 6 · ChunkedGrid
+
+| Schritt | Code-Commit | Läufe | TPS | p50 µs | p99 µs | ns/Tier/Tick | Hash bei Tick 5.000 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 6 · ChunkedGrid | `b21cd49` | 1 | 572.081 | 1739.820 | 2812.050 | 139.981 | 0x19eb3e87d333006d |
+
+| Schritt | Seitenlänge | Ø Tiere | Step ns/Tier/Tick | Decide ns/Tier/Tick | Environment ns/Kachel/Tick | Kandidaten/Abfrage | Abfragen/Tick |
+
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 6 · ChunkedGrid | 256 | 3209.750 | 98.949 | 71.990 | 0.133 | 21.396 | 799.628 |
+| 6 · ChunkedGrid | 512 | 12686.000 | 113.839 | 83.717 | 0.151 | 21.586 | 3163.664 |
+| 6 · ChunkedGrid | 1024 | 50670.150 | 145.351 | 106.561 | 0.288 | 22.196 | 12625.815 |
+| 6 · ChunkedGrid | 2048 | 195779.000 | 209.882 | 148.042 | 0.366 | 19.854 | 48734.404 |

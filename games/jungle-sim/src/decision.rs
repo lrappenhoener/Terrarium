@@ -115,26 +115,45 @@ pub(crate) fn decide(
     let params = view.config.species(animal.species);
     let herbivore = animal.species == Species::Herbivore;
     let random = stateless_u64(view.seed, view.tick, id.to_u64(), 0);
-    query_counts[0] += 1;
-    query_counts[1] += view
-        .spatial
-        .query_radius(point, params.perception_radius, out) as u128;
-    let mut closest = None;
-    let mut closest_friend = None;
-    for &SpatialHit { id: other, slot } in out.iter().filter(|hit| hit.id != id) {
-        if let (Some(other_animal), Some(other_point)) = (
-            view.columns.vitals.get(slot as usize),
-            view.columns.position.get(slot as usize),
-        ) {
-            let item = (point.distance_squared(*other_point), other);
-            if other_animal.species == animal.species {
-                closest_friend =
-                    Some(closest_friend.map_or(item, |best: (u128, EntityId)| best.min(item)));
-            } else {
-                closest = Some(closest.map_or(item, |best: (u128, EntityId)| best.min(item)));
-            }
-        }
-    }
+    let capacity = if herbivore {
+        view.walkable / 20 + 16
+    } else {
+        view.population[0] / 15 + 16
+    };
+    let may_mate = view.population[animal.species.index()] < capacity
+        && view.pregnant.get(id).is_none()
+        && animal.age > 80
+        && animal.hunger < params.reproduction_threshold
+        && animal.thirst < 80
+        && below(random, if herbivore { 72 } else { 36 }) == 0;
+    let mut nearest = |category: usize| {
+        query_counts[0] += 1;
+        query_counts[1] +=
+            view.spatial
+                .query_radius(point, params.perception_radius, 1 << category, out)
+                as u128;
+        out.iter()
+            .filter(|hit| hit.id != id)
+            .map(|hit| {
+                (
+                    point.distance_squared(view.columns.position[hit.slot as usize]),
+                    hit.id,
+                )
+            })
+            .min()
+    };
+    let current_herd = animal.herd.filter(|&friend| {
+        herbivore
+            && view.position(friend).is_some_and(|p| {
+                point.distance_squared(p) <= u128::from(params.perception_radius).pow(2)
+            })
+    });
+    let closest = nearest(1 - animal.species.index());
+    let closest_friend = if (herbivore && current_herd.is_none()) || may_mate {
+        nearest(animal.species.index())
+    } else {
+        None
+    };
     let previous = view.hunting.get(id).copied().and_then(|target| {
         let p = view.position(target)?;
         let distance = point.distance_squared(p);
@@ -146,31 +165,13 @@ pub(crate) fn decide(
         previous.into_iter().chain(closest).min()
     };
     let herd = if herbivore {
-        animal
-            .herd
-            .filter(|&friend| {
-                view.position(friend).is_some_and(|p| {
-                    point.distance_squared(p) <= u128::from(params.perception_radius).pow(2)
-                })
-            })
-            .or_else(|| closest_friend.map(|(_, id)| id))
+        current_herd.or_else(|| closest_friend.map(|(_, id)| id))
     } else {
         None
     };
     let hunger = i32::from(animal.hunger);
     let thirst = i32::from(animal.thirst);
-    let capacity = if herbivore {
-        view.walkable / 20 + 16
-    } else {
-        view.population[0] / 15 + 16
-    };
-    let can_mate = view.population[animal.species.index()] < capacity
-        && view.pregnant.get(id).is_none()
-        && closest_friend.is_some()
-        && animal.age > 80
-        && animal.hunger < params.reproduction_threshold
-        && animal.thirst < 80
-        && below(random, if herbivore { 72 } else { 36 }) == 0;
+    let can_mate = may_mate && closest_friend.is_some();
     let scores = [
         (
             Action::Graze as u32,

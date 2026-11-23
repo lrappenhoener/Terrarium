@@ -84,24 +84,33 @@ pub struct SpatialIndex {
     height: i32,
     cell_size: i32,
     columns: usize,
+    categories: usize,
     offsets: Vec<usize>,
     cursors: Vec<usize>,
     entries: Vec<(SpatialHit, Point)>,
 }
 
 impl SpatialIndex {
-    pub fn new(width: i32, height: i32, cell_size: i32, capacity: usize) -> Option<Self> {
-        if cell_size <= 0 || width <= 0 || height <= 0 {
+    pub fn new(
+        width: i32,
+        height: i32,
+        cell_size: i32,
+        categories: u8,
+        capacity: usize,
+    ) -> Option<Self> {
+        if cell_size <= 0 || width <= 0 || height <= 0 || !(1..=64).contains(&categories) {
             return None;
         }
         let columns = (width - 1) / cell_size + 1;
         let rows = (height - 1) / cell_size + 1;
-        let cells = area(columns, rows)?;
+        let categories = categories as usize;
+        let cells = area(columns, rows)?.checked_mul(categories)?;
         Some(Self {
             width,
             height,
             cell_size,
             columns: columns as usize,
+            categories,
             offsets: vec![0; cells.checked_add(1)?],
             cursors: vec![0; cells],
             entries: Vec::with_capacity(capacity),
@@ -114,10 +123,15 @@ impl SpatialIndex {
         })
     }
 
-    pub fn rebuild(&mut self, entries: impl Iterator<Item = (SpatialHit, Point)> + Clone) {
+    fn cell_category(&self, point: Point, category: u8) -> Option<usize> {
+        let category = category as usize;
+        (category < self.categories).then_some(self.cell(point)? * self.categories + category)
+    }
+
+    pub fn rebuild(&mut self, entries: impl Iterator<Item = (SpatialHit, Point, u8)> + Clone) {
         self.offsets.fill(0);
-        for (_, point) in entries.clone() {
-            if let Some(cell) = self.cell(point) {
+        for (_, point, category) in entries.clone() {
+            if let Some(cell) = self.cell_category(point, category) {
                 self.offsets[cell + 1] += 1;
             }
         }
@@ -137,8 +151,8 @@ impl SpatialIndex {
         );
         let cells = self.cursors.len();
         self.cursors.copy_from_slice(&self.offsets[..cells]);
-        for (id, point) in entries {
-            if let Some(cell) = self.cell(point) {
+        for (id, point, category) in entries {
+            if let Some(cell) = self.cell_category(point, category) {
                 self.entries[self.cursors[cell]] = (id, point);
                 self.cursors[cell] += 1;
             }
@@ -153,7 +167,13 @@ impl SpatialIndex {
         self.entries.is_empty()
     }
 
-    pub fn query_radius(&self, center: Point, radius: u32, out: &mut Vec<SpatialHit>) -> usize {
+    pub fn query_radius(
+        &self,
+        center: Point,
+        radius: u32,
+        category_mask: u64,
+        out: &mut Vec<SpatialHit>,
+    ) -> usize {
         out.clear();
         let radius = i64::from(radius);
         let min_x = (i64::from(center.x) - radius).max(0);
@@ -168,11 +188,17 @@ impl SpatialIndex {
         let mut candidates = 0;
         for row in min_y / size..=max_y / size {
             for col in min_x / size..=max_x / size {
-                let cell = row as usize * self.columns + col as usize;
-                candidates += self.offsets[cell + 1] - self.offsets[cell];
-                for &(id, point) in &self.entries[self.offsets[cell]..self.offsets[cell + 1]] {
-                    if center.distance_squared(point) <= squared {
-                        out.push(id);
+                let start = (row as usize * self.columns + col as usize) * self.categories;
+                let mut mask = category_mask & (u64::MAX >> (64 - self.categories));
+                while mask != 0 {
+                    let cell = start + mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    let entries = &self.entries[self.offsets[cell]..self.offsets[cell + 1]];
+                    candidates += entries.len();
+                    for &(hit, point) in entries {
+                        if center.distance_squared(point) <= squared {
+                            out.push(hit);
+                        }
                     }
                 }
             }

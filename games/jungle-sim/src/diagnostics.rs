@@ -209,7 +209,8 @@ impl JungleSim {
             }) {
                 return Err(fail("valid herd ID must name a herbivore"));
             }
-            self.spatial.query_radius(point, 0, &mut hits);
+            self.spatial
+                .query_radius(point, 0, 1 << a.species.index(), &mut hits);
             if hits.len() != 1 || hits[0].id != id || Some(hits[0].slot) != self.allocator.slot(id)
             {
                 return Err(fail("spatial index differs from live positions"));

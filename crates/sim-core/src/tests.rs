@@ -69,7 +69,7 @@ fn grid_is_row_major() {
 
 #[test]
 fn spatial_queries_match_brute_force() {
-    let mut index = SpatialIndex::new(71, 53, 8, 500).unwrap();
+    let mut index = SpatialIndex::new(71, 53, 8, 3, 500).unwrap();
     for seed in [1, 2, 42] {
         let mut rng = SystemRng::new(seed, 7);
         let mut entries = Vec::new();
@@ -78,20 +78,25 @@ fn spatial_queries_match_brute_force() {
                 x: below(rng.next_u64(), 71) as i32,
                 y: below(rng.next_u64(), 53) as i32,
             };
-            entries.push((SpatialHit { id: id(i), slot: i }, point));
+            entries.push((SpatialHit { id: id(i), slot: i }, point, (i % 3) as u8));
         }
         index.rebuild(entries.iter().copied());
         let mut hits = Vec::new();
         for radius in [0u32, 1, 8, 12, 75] {
-            for (_, point) in entries.iter().step_by(9) {
-                index.query_radius(*point, radius, &mut hits);
-                let mut expected: Vec<_> = entries
-                    .iter()
-                    .filter(|(_, p)| p.distance_squared(*point) <= u128::from(radius).pow(2))
-                    .map(|(id, _)| *id)
-                    .collect();
-                expected.sort_unstable();
-                assert_eq!(hits, expected);
+            for (_, point, _) in entries.iter().step_by(9) {
+                for mask in [0, 1, 2, 4, 5, 7] {
+                    index.query_radius(*point, radius, mask, &mut hits);
+                    let mut expected: Vec<_> = entries
+                        .iter()
+                        .filter(|(_, p, category)| {
+                            mask & (1 << category) != 0
+                                && p.distance_squared(*point) <= u128::from(radius).pow(2)
+                        })
+                        .map(|(id, _, _)| *id)
+                        .collect();
+                    expected.sort_unstable();
+                    assert_eq!(hits, expected);
+                }
             }
         }
     }
