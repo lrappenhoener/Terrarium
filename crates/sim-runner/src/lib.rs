@@ -1,6 +1,7 @@
 //! Game-independent execution, timing, and determinism verification.
 
 mod container;
+mod divergence;
 mod input;
 mod options;
 mod profile;
@@ -47,12 +48,14 @@ pub enum RunnerError {
     Sim(#[from] SimError),
     #[error("invariant violation at tick {tick}: {message}")]
     InvariantViolation { tick: u64, message: String },
-    #[error("determinism mismatch at tick {tick}: {first:#018x} vs {second:#018x}; differing subsystems: {}", .subsystems.join(", "))]
+    #[error("determinism mismatch at tick {tick}: {first:#018x} vs {second:#018x}; checkpoint interval {interval}; differing subsystems: {}{details}", .subsystems.join(", "))]
     DeterminismMismatch {
         tick: u64,
         first: u64,
         second: u64,
         subsystems: Vec<&'static str>,
+        interval: String,
+        details: String,
     },
     #[error("replay mismatch in checkpoint interval ({from}, {to}]; differing subsystems: {}", .subsystems.join(", "))]
     ReplayMismatch {
@@ -103,7 +106,7 @@ pub struct RunOptions {
     pub artifacts: ArtifactOptions,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ArtifactOptions {
     pub save_snapshot_at: Vec<u64>,
     pub snapshot_dir: Option<PathBuf>,
@@ -114,6 +117,26 @@ pub struct ArtifactOptions {
     pub replay: Option<PathBuf>,
     pub force: bool,
     pub dump_state_at: Option<u64>,
+    pub bisect: bool,
+    pub diff_dir: PathBuf,
+}
+
+impl Default for ArtifactOptions {
+    fn default() -> Self {
+        Self {
+            save_snapshot_at: Vec::new(),
+            snapshot_dir: None,
+            load_snapshot: None,
+            verify_save_load: false,
+            roundtrip_at: Vec::new(),
+            record_replay: None,
+            replay: None,
+            force: false,
+            dump_state_at: None,
+            bisect: false,
+            diff_dir: "divergence".into(),
+        }
+    }
 }
 
 enum Start<C> {
@@ -186,6 +209,7 @@ struct Checkpoint {
     hash: u64,
     active: usize,
     units: Vec<(&'static str, u64)>,
+    snapshot: Option<Vec<u8>>,
     subsystems: Vec<(&'static str, u64)>,
 }
 
@@ -301,6 +325,15 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
             "snapshot save tick is outside the run".into(),
         ));
     }
+    if opts
+        .artifacts
+        .dump_state_at
+        .is_some_and(|tick| !(start.tick()..=opts.ticks).contains(&tick))
+    {
+        return Err(RunnerError::InvalidOptions(
+            "state dump tick lies outside the run".into(),
+        ));
+    }
     let roundtrips = roundtrip_ticks(opts, start.tick())?;
     let schedule = match (&playback, &opts.commands) {
         (Some(playback), _) => playback.schedule()?,
@@ -314,6 +347,9 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         Some(&mut diagnostics),
         Pass {
             playback: playback.as_ref(),
+            retain_snapshots: opts.artifacts.bisect
+                && (opts.verify_determinism || opts.artifacts.verify_save_load)
+                && S::snapshot_version() != 0,
             ..Pass::default()
         },
     )?;
@@ -365,7 +401,27 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
 
     let verified_checkpoints = if opts.verify_determinism {
         let second = run_once::<S>(opts, &start, &schedule, None, Pass::default())?;
-        verify_checkpoints(&first.checkpoints, &second.checkpoints)?;
+        if let Some(difference) = divergence::compare(&first.checkpoints, &second.checkpoints) {
+            let error = difference.error();
+            if let Some(exact) = divergence::locate::<S>(
+                opts,
+                &start,
+                &schedule,
+                &[],
+                &first.checkpoints,
+                &difference,
+            )? {
+                return Err(RunnerError::DeterminismMismatch {
+                    tick: exact.tick,
+                    first: exact.first,
+                    second: exact.second,
+                    subsystems: exact.subsystems,
+                    interval: difference.interval(),
+                    details: exact.details,
+                });
+            }
+            return Err(error);
+        }
         Some(first.checkpoints.len())
     } else {
         None
@@ -381,23 +437,30 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
                 ..Pass::default()
             },
         )?;
-        if let Err(error) = verify_checkpoints(&first.checkpoints, &second.checkpoints) {
-            let RunnerError::DeterminismMismatch { tick, .. } = error else {
-                return Err(error);
-            };
+        if let Some(difference) = divergence::compare(&first.checkpoints, &second.checkpoints) {
+            let exact = divergence::locate::<S>(
+                opts,
+                &start,
+                &schedule,
+                &roundtrips,
+                &first.checkpoints,
+                &difference,
+            )?;
+            let tick = exact.as_ref().map_or(difference.tick, |exact| exact.tick);
+            let window = difference.error().to_string();
+            let interval = difference.interval();
             let last = roundtrips
                 .iter()
                 .rev()
                 .copied()
                 .find(|&point| point <= tick);
-            let message = last.map_or_else(
-                || format!("mismatch before first reload: {error}"),
-                |point| {
-                    format!(
-                        "mismatch {} ticks after reload at {point}: {error}",
-                        tick - point
-                    )
-                },
+            let context = last.map_or_else(
+                || "before first reload".into(),
+                |point| format!("{} ticks after reload at {point}", tick - point),
+            );
+            let message = exact.map_or_else(
+                || format!("checkpoint mismatch {context}: {window}"),
+                |exact| format!("exact mismatch {context} in checkpoint interval {interval}; differing subsystems: {}{}", exact.subsystems.join(", "), exact.details),
             );
             return Err(RunnerError::SaveLoadMismatch { tick, message });
         }
@@ -453,6 +516,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
 struct Pass<'a> {
     roundtrips: &'a [u64],
     playback: Option<&'a replay::Playback>,
+    retain_snapshots: bool,
 }
 
 fn run_once<S: Simulation>(
@@ -521,7 +585,7 @@ fn run_once<S: Simulation>(
     }
     let mut reloaded = 0;
     if pass.roundtrips.binary_search(&tick).is_ok() {
-        sim = reload(sim)?;
+        sim = reload(opts, sim)?;
         reloaded += 1;
     }
     if diagnostics.is_some() {
@@ -580,7 +644,7 @@ fn run_once<S: Simulation>(
         }
         tick = next;
         if pass.roundtrips.binary_search(&tick).is_ok() {
-            sim = reload(sim)?;
+            sim = reload(opts, sim)?;
             reloaded += 1;
         }
 
@@ -613,7 +677,13 @@ fn run_once<S: Simulation>(
             let hash = sim.state_hash();
             let metrics = sim.metrics();
             if checkpoint_due {
-                checkpoints.push(checkpoint(&sim, tick, hash, metrics.active_entities));
+                checkpoints.push(checkpoint(
+                    &sim,
+                    tick,
+                    hash,
+                    metrics.active_entities,
+                    pass.retain_snapshots,
+                )?);
             }
             if let Some(writer) = diagnostics.as_deref_mut().filter(|_| report_due) {
                 write_progress(writer, tick, hash, &metrics)?;
@@ -625,7 +695,13 @@ fn run_once<S: Simulation>(
     let hash = sim.state_hash();
     let metrics = sim.metrics();
     if checkpoints.last().is_none_or(|last| last.tick != tick) {
-        checkpoints.push(checkpoint(&sim, tick, hash, metrics.active_entities));
+        checkpoints.push(checkpoint(
+            &sim,
+            tick,
+            hash,
+            metrics.active_entities,
+            pass.retain_snapshots,
+        )?);
     }
     if let Some(trace) = &mut trace {
         if tick != initial_tick && !due(tick, telemetry.trace_every) {
@@ -682,7 +758,7 @@ fn roundtrip_ticks(opts: &RunOptions, start: u64) -> Result<Vec<u64>, RunnerErro
     Ok(ticks)
 }
 
-fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
+fn reload<S: Simulation>(opts: &RunOptions, sim: S) -> Result<S, RunnerError> {
     let tick = sim.tick();
     let hash = sim.state_hash();
     let before = sim.subsystem_hashes();
@@ -692,6 +768,7 @@ fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
             tick,
             message: format!("could not save: {err}"),
         })?;
+    let dump_before = divergence::dump(&sim);
     drop(sim);
     let loaded = S::load_snapshot(&bytes).map_err(|err| RunnerError::SaveLoadMismatch {
         tick,
@@ -700,10 +777,16 @@ fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
     let actual = loaded.state_hash();
     let subsystems = container::differing(before, loaded.subsystem_hashes());
     if hash != actual || loaded.tick() != tick || !subsystems.is_empty() {
+        let details = divergence::details(
+            &opts.artifacts.diff_dir,
+            tick,
+            dump_before,
+            divergence::dump(&loaded),
+        );
         return Err(RunnerError::SaveLoadMismatch {
             tick,
             message: format!(
-                "hash differs immediately after loading ({hash:#018x} vs {actual:#018x}, loaded tick {}); differing subsystems: {}",
+                "hash differs immediately after loading ({hash:#018x} vs {actual:#018x}, loaded tick {}); differing subsystems: {}{details}",
                 loaded.tick(),
                 subsystems.join(", ")
             ),
@@ -714,7 +797,7 @@ fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
 
 fn dump_state_if_requested<S: Simulation>(opts: &RunOptions, sim: &S) -> Result<(), RunnerError> {
     if opts.artifacts.dump_state_at == Some(sim.tick()) {
-        let dir = Path::new("divergence");
+        let dir = opts.artifacts.diff_dir.as_path();
         std::fs::create_dir_all(dir).map_err(|err| io_at(dir, err))?;
         let path = dir.join(format!("replay-t{}.txt", sim.tick()));
         let mut dump = String::new();
@@ -750,16 +833,30 @@ fn save_if_requested<S: Simulation>(
     Ok(())
 }
 
-fn checkpoint<S: Simulation>(sim: &S, tick: u64, hash: u64, active: usize) -> Checkpoint {
+fn checkpoint<S: Simulation>(
+    sim: &S,
+    tick: u64,
+    hash: u64,
+    active: usize,
+    retain_snapshot: bool,
+) -> Result<Checkpoint, RunnerError> {
+    let snapshot = if retain_snapshot {
+        let mut bytes = Vec::new();
+        sim.save_snapshot(&mut bytes)?;
+        Some(bytes)
+    } else {
+        None
+    };
     let mut subsystems = sim.subsystem_hashes();
     subsystems.sort_unstable_by_key(|&(name, value)| (name, value));
-    Checkpoint {
+    Ok(Checkpoint {
         tick,
         hash,
         active,
         units: sim.scale_units(),
+        snapshot,
         subsystems,
-    }
+    })
 }
 
 pub(crate) fn nanoseconds(duration: Duration) -> u64 {
@@ -793,42 +890,12 @@ fn check_invariants<S: Simulation>(sim: &S, tick: u64) -> Result<(), RunnerError
         })
 }
 
+#[cfg(test)]
 fn verify_checkpoints(first: &[Checkpoint], second: &[Checkpoint]) -> Result<(), RunnerError> {
-    let different_pair = first
-        .iter()
-        .zip(second)
-        .find(|(a, b)| a.tick != b.tick || a.hash != b.hash || a.subsystems != b.subsystems);
-    let different_lengths = || {
-        if first.len() != second.len() {
-            first.last().zip(second.last())
-        } else {
-            None
-        }
-    };
-    if let Some((a, b)) = different_pair.or_else(different_lengths) {
-        return Err(RunnerError::DeterminismMismatch {
-            tick: a.tick.min(b.tick),
-            first: a.hash,
-            second: b.hash,
-            subsystems: {
-                let mut different: Vec<_> = a
-                    .subsystems
-                    .iter()
-                    .filter(|entry| !b.subsystems.contains(entry))
-                    .chain(
-                        b.subsystems
-                            .iter()
-                            .filter(|entry| !a.subsystems.contains(entry)),
-                    )
-                    .map(|&(name, _)| name)
-                    .collect();
-                different.sort_unstable();
-                different.dedup();
-                different
-            },
-        });
+    match divergence::compare(first, second) {
+        Some(difference) => Err(difference.error()),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn write_progress(

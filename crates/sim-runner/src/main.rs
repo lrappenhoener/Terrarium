@@ -86,6 +86,10 @@ struct Cli {
     force: bool,
     #[arg(long, requires = "replay")]
     dump_state_at: Option<u64>,
+    #[arg(long)]
+    bisect: bool,
+    #[arg(long, default_value = "divergence")]
+    diff_dir: PathBuf,
 }
 
 impl From<Cli> for RunOptions {
@@ -105,6 +109,8 @@ impl From<Cli> for RunOptions {
                 replay: cli.replay,
                 force: cli.force,
                 dump_state_at: cli.dump_state_at,
+                bisect: cli.bisect,
+                diff_dir: cli.diff_dir,
             },
             config: cli.config,
             commands: cli.commands,

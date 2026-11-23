@@ -327,7 +327,14 @@ commands = [{SpawnAnimals = {species = "Herbivore", count = 4}}]
         let playback = cli()
             .arg("--replay")
             .arg(&replay)
-            .args(["--report-format", "json"])
+            .args([
+                "--report-format",
+                "json",
+                "--dump-state-at",
+                "12",
+                "--diff-dir",
+            ])
+            .arg(&dir)
             .output()
             .unwrap();
         assert!(
@@ -337,6 +344,11 @@ commands = [{SpawnAnimals = {species = "Herbivore", count = 4}}]
         );
         let second: serde_json::Value = serde_json::from_slice(&playback.stdout).unwrap();
         assert_eq!(second["replay_verified"], true);
+        assert!(
+            fs::read_to_string(dir.join("replay-t12.txt"))
+                .unwrap()
+                .starts_with("meta tick=12 ")
+        );
         assert_eq!(second["state_hash"], first["state_hash"]);
     }
     fs::remove_dir_all(dir).unwrap();

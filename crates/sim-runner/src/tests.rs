@@ -143,7 +143,7 @@ pub(crate) fn options() -> RunOptions {
 }
 
 #[test]
-fn detects_nondeterminism_at_the_first_checkpoint() {
+fn detects_divergence_in_the_initial_state() {
     let opts = RunOptions {
         verify_determinism: true,
         ..options()
@@ -151,7 +151,7 @@ fn detects_nondeterminism_at_the_first_checkpoint() {
     let result = run_simulation::<TestSim<true>>(&opts);
     assert!(matches!(
         result,
-        Err(RunnerError::DeterminismMismatch { tick: 2, first, second, .. }) if first != second
+        Err(RunnerError::DeterminismMismatch { tick: 0, first, second, .. }) if first != second
     ));
 }
 
@@ -363,4 +363,126 @@ fn trace_writes_null_once_when_an_entity_dies() {
         lines[2],
         serde_json::json!({"tick": 2, "entity": 7, "fields": null})
     );
+}
+
+struct Delayed<const NONDETERMINISTIC: bool> {
+    tick: u64,
+    latent: bool,
+}
+
+impl<const NONDETERMINISTIC: bool> Delayed<NONDETERMINISTIC> {
+    fn value(&self) -> u64 {
+        u64::from(self.tick >= 437 && self.latent)
+    }
+}
+
+impl<const NONDETERMINISTIC: bool> Simulation for Delayed<NONDETERMINISTIC> {
+    type Config = ();
+    type Command = ();
+
+    fn new(_: u64, _: ()) -> Result<Self, SimError> {
+        static INSTANCES: AtomicU64 = AtomicU64::new(0);
+        let latent =
+            NONDETERMINISTIC && !INSTANCES.fetch_add(1, Ordering::Relaxed).is_multiple_of(2);
+        Ok(Self { tick: 0, latent })
+    }
+    fn step(&mut self, _: &[()]) {
+        self.tick += 1;
+    }
+    fn tick(&self) -> u64 {
+        self.tick
+    }
+    fn is_finished(&self) -> bool {
+        false
+    }
+    fn metrics(&self) -> SimMetrics {
+        SimMetrics {
+            active_entities: 1,
+            custom_gauges: vec![],
+        }
+    }
+    fn state_hash(&self) -> u64 {
+        let mut hash = StateHasher::new();
+        hash.write_u64(self.tick);
+        hash.write_u64(self.value());
+        hash.finish()
+    }
+    fn subsystem_hashes(&self) -> Vec<(&'static str, u64)> {
+        vec![("a", self.tick), ("b", self.value())]
+    }
+    fn check_invariants(&self) -> Result<(), SimError> {
+        Ok(())
+    }
+    fn snapshot_version() -> u32 {
+        u32::from(!NONDETERMINISTIC)
+    }
+    fn save_snapshot(&self, out: &mut Vec<u8>) -> Result<(), SimError> {
+        out.extend_from_slice(&self.tick.to_le_bytes());
+        // The delayed save/load fixture omits the latent value.
+        Ok(())
+    }
+    fn load_snapshot(input: &[u8]) -> Result<Self, SimError> {
+        let bytes: [u8; 8] = input
+            .try_into()
+            .map_err(|_| SimError::Snapshot("invalid test snapshot".into()))?;
+        Ok(Self {
+            tick: u64::from_le_bytes(bytes),
+            latent: true,
+        })
+    }
+    fn debug_dump(&self, out: &mut String) -> Result<(), SimError> {
+        *out = format!("a tick={}\nb entity=17 value={}\n", self.tick, self.value());
+        Ok(())
+    }
+}
+
+fn assert_fine_failure<const NONDETERMINISTIC: bool>(mode: &str) {
+    let dir = std::env::temp_dir().join(format!("terrarium-bisect-{mode}-{}", std::process::id()));
+    let opts = RunOptions {
+        ticks: 500,
+        hash_interval: 100,
+        verify_determinism: NONDETERMINISTIC,
+        artifacts: ArtifactOptions {
+            bisect: !NONDETERMINISTIC,
+            diff_dir: dir.clone(),
+            verify_save_load: !NONDETERMINISTIC,
+            roundtrip_at: if NONDETERMINISTIC { vec![] } else { vec![120] },
+            ..ArtifactOptions::default()
+        },
+        ..options()
+    };
+    let error = run_simulation::<Delayed<NONDETERMINISTIC>>(&opts).unwrap_err();
+    let message = error.to_string();
+    eprintln!("{mode}: {message}");
+    if NONDETERMINISTIC {
+        assert!(
+            matches!(&error, RunnerError::DeterminismMismatch { tick: 437, subsystems, .. } if subsystems == &["b"])
+        );
+    } else {
+        assert!(matches!(
+            &error,
+            RunnerError::SaveLoadMismatch { tick: 437, .. }
+        ));
+        assert!(message.contains("317 ticks after reload at 120"));
+    }
+    assert!(message.contains("line 2: A b entity=17 value=0 | B b entity=17 value=1"));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("tick-437-a.txt")).unwrap(),
+        "a tick=437\nb entity=17 value=0\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("tick-437-b.txt")).unwrap(),
+        "a tick=437\nb entity=17 value=1\n"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn determinism_bisect_finds_tick_437_and_subsystem_b() {
+    assert_fine_failure::<true>("determinism");
+}
+
+#[test]
+fn save_load_bisect_falls_back_from_anchor_and_finds_tick_437() {
+    assert_fine_failure::<false>("save-load");
 }

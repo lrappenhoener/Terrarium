@@ -326,7 +326,9 @@ mod tests {
 
     #[test]
     fn save_load_detects_an_immediate_difference() {
-        let error = crate::reload(Broken(8)).err().unwrap();
+        let error = crate::reload(&crate::tests::options(), Broken(8))
+            .err()
+            .unwrap();
         assert!(matches!(
             error,
             RunnerError::SaveLoadMismatch { tick: 8, .. }
