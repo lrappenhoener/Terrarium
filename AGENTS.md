@@ -28,6 +28,8 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Über Tick-Grenzen hinweg ausschließlich generationale IDs speichern. Ziele, Herden und Elternreferenzen vor jeder Nutzung validieren.
 - Entitäten gesammelt am Tick-Ende über einen Command-Buffer in Reihenfolge der auslösenden ID und eines eindeutigen Ordinals erzeugen und entfernen.
 - Teure Updates mit `(tick + key) % interval == 0` über Entitäten oder Kacheln verteilen.
+- Abgeleitete Strukturen (Erreichbarkeit, Indizes, Weg-Caches, abstrakte Graphen) werden nie gespeichert oder gehasht und beim Laden neu aufgebaut. Das Verhalten hängt nur von ihren layoutunabhängigen Antworten ab, etwa „erreichbar ja/nein“, nie von internen ID-Werten. Ihre gezielte Aktualisierung wird gegen eine vollständige Neuberechnung getestet.
+- Jede Suche ist begrenzt: Expansionslimit pro Suche und Budget pro Tick. Unbegrenzte Suchen sind verboten.
 
 ## Runner-Schnittstelle
 

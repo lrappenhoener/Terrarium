@@ -1,4 +1,9 @@
-//! Bounded A* with reusable buffers and a per-tick budgeted request queue.
+//! Bounded A* with reusable buffers, a per-tick budgeted request queue and
+//! incrementally maintained reachability.
+
+mod connectivity;
+
+pub use connectivity::{Connectivity, ConnectivityStats};
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
