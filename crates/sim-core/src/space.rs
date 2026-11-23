@@ -7,6 +7,7 @@ pub struct Point {
 }
 
 impl Point {
+    /// Each difference has at most 32 bits, so two squared differences fit in u128.
     pub fn distance_squared(self, other: Self) -> u128 {
         let dx = i64::from(self.x).abs_diff(i64::from(other.x)) as u128;
         let dy = i64::from(self.y).abs_diff(i64::from(other.y)) as u128;
@@ -128,6 +129,7 @@ impl SpatialIndex {
         (category < self.categories).then_some(self.cell(point)? * self.categories + category)
     }
 
+    /// Both passes must enumerate the same entries. The counts bound the cursors.
     pub fn rebuild(&mut self, entries: impl Iterator<Item = (SpatialHit, Point, u8)> + Clone) {
         self.offsets.fill(0);
         for (_, point, category) in entries.clone() {

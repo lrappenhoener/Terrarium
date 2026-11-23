@@ -117,7 +117,6 @@ pub struct JungleSim {
     hunting: SparseStorage<EntityId>,
     pregnant: SparseStorage<u64>,
     spatial: SpatialIndex,
-    locations: Vec<(SpatialHit, Point, u8)>,
     nearby: Vec<SpatialHit>,
     decisions: Vec<(EntityId, Decision)>,
     moves: IntentBuffer<Point, ()>,
@@ -166,8 +165,10 @@ impl JungleSim {
                         .retain(|event| !matches!(event, Event::DroughtEnd));
                     self.drought_until =
                         (duration_ticks != 0).then(|| self.tick.saturating_add(duration_ticks));
-                    if let Some(end) = self.drought_until {
-                        self.events.push(end, Event::DroughtEnd);
+                    if let Some(end) = self.drought_until
+                        && !self.events.push(end, Event::DroughtEnd)
+                    {
+                        self.drought_until = None;
                     }
                 }
             }
@@ -198,10 +199,8 @@ impl JungleSim {
     }
 
     fn rebuild_spatial(&mut self) {
-        self.locations.clear();
-        self.locations
-            .extend(spatial_entries(&self.allocator, &self.columns));
-        self.spatial.rebuild(self.locations.iter().copied());
+        self.spatial
+            .rebuild(spatial_entries(&self.allocator, &self.columns));
     }
 
     fn open(&self, point: Point) -> bool {
@@ -441,9 +440,10 @@ impl JungleSim {
                         let deadline = self
                             .tick
                             .saturating_add(self.config.species(animal.species).gestation_ticks);
-                        if self.events.len() < self.config.max_animals as usize {
+                        if self.events.len() < self.config.max_animals as usize
+                            && self.events.push(deadline, Event::Birth(id))
+                        {
                             self.pregnant.insert(id, deadline);
-                            self.events.push(deadline, Event::Birth(id));
                         }
                     }
                 }
@@ -485,7 +485,8 @@ impl JungleSim {
                     None
                 };
                 if let Some(cause) = cause {
-                    self.deaths[cause as usize] += 1;
+                    let count = &mut self.deaths[cause as usize];
+                    *count = count.saturating_add(1);
                     self.commands.push(id, 0, EntityCommand::Despawn(id));
                 }
             }
@@ -532,7 +533,7 @@ impl JungleSim {
                         y: at.y + cell / 5 - 2,
                     };
                     if self.spawn_at(species, point, false) {
-                        self.births += 1;
+                        self.births = self.births.saturating_add(1);
                         remaining -= 1;
                         if remaining == 0 {
                             break;
@@ -580,7 +581,6 @@ impl Simulation for JungleSim {
             permutation: SlotPermutation::with_capacity(n),
             hunting: SparseStorage::with_capacity(cap),
             pregnant: SparseStorage::with_capacity(cap),
-            locations: Vec::with_capacity(n),
             nearby: Vec::with_capacity(n),
             decisions: Vec::with_capacity(n),
             moves: IntentBuffer::with_capacity(n),
@@ -629,11 +629,8 @@ impl Simulation for JungleSim {
         phase(probe, "resolve", || self.resolve());
         phase(probe, "apply", || self.apply_effects());
         phase(probe, "environment", || self.environment());
-        phase(probe, "lifecycle", || {
-            self.lifecycle();
-            self.rebuild_spatial();
-        });
-        self.tick += 1;
+        phase(probe, "lifecycle", || self.lifecycle());
+        self.tick = self.tick.saturating_add(1);
     }
 
     fn tick(&self) -> u64 {

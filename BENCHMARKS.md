@@ -73,3 +73,28 @@ Jungle mit Seed 42 und Standardkonfiguration, Hashformat `jungle-logical-v1`. Du
 | 6 · ChunkedGrid | 512 | 12686.000 | 113.839 | 83.717 | 0.151 | 21.586 | 3163.664 |
 | 6 · ChunkedGrid | 1024 | 50670.150 | 145.351 | 106.561 | 0.288 | 22.196 | 12625.815 |
 | 6 · ChunkedGrid | 2048 | 195779.000 | 209.882 | 148.042 | 0.366 | 19.854 | 48734.404 |
+
+## Schritt 7 · Kategorieindex
+
+| Schritt | Code-Commit | Läufe | TPS | p50 µs | p99 µs | ns/Tier/Tick | Hash bei Tick 5.000 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 7 · Kategorieindex | `1cd65c9` | 1 | 943.586 | 1031.120 | 2108.020 | 84.868 | 0x19eb3e87d333006d |
+
+| Schritt | Seitenlänge | Ø Tiere | Step ns/Tier/Tick | Decide ns/Tier/Tick | Environment ns/Kachel/Tick | Kandidaten/Abfrage | Abfragen/Tick |
+
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7 · Kategorieindex | 256 | 3209.750 | 65.149 | 36.954 | 0.136 | 2.761 | 874.672 |
+| 7 · Kategorieindex | 512 | 12686.000 | 80.395 | 48.839 | 0.154 | 2.902 | 3464.088 |
+| 7 · Kategorieindex | 1024 | 50670.150 | 133.771 | 83.092 | 0.380 | 2.966 | 13824.475 |
+| 7 · Kategorieindex | 2048 | 195779.000 | 97.746 | 59.820 | 0.206 | 2.616 | 53645.325 |
+
+## Overflow-Vergleich
+
+Drei Standardläufe pro Release-Variante, in wechselnder Reihenfolge auf identischem Code nach Entfernen des zweiten Raumindex-Aufbaus. Das Entscheidungskriterium ist die mediane Step-Zeit pro Tick.
+
+| Release-Overflow-Checks | Step ns/Tick | TPS | p99 µs |
+| --- | ---: | ---: | ---: |
+| Aus | 722.921,78 | 1.383,28 | 1.705,17 |
+| An | 757.463,20 | 1.320,20 | 1.732,81 |
+
+Die Mehrkosten von **4,78 %** lagen über der 3-%-Grenze. Globales Prüfen bleibt im Release-Profil aus. Die arithmetische Prüfung hat besonders die laufenden Tick-, Geburts- und Todeszähler sowie die Ereignisfolge betrachtet. Die Zähler sättigen jetzt explizit. Der Scheduler lehnt neue Ereignisse bei erschöpfter Sequenz ab, sodass keine Sortierschlüssel wiederverwendet werden. Kachel- und Slot-Indexarithmetik ist durch geprüfte Konstruktorgrößen und gültige Indizes begrenzt. Distanzquadrate und Staffelung rechnen in verbreiterten Typen, Biomasse und Bedürfnisse bleiben durch die lokalen Zuteilungs- und Sättigungsregeln begrenzt. Die Referenz-Hashes stimmten mit beiden globalen Einstellungen überein.

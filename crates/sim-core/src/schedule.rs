@@ -40,13 +40,18 @@ impl<T> EventQueue<T> {
         }
     }
 
-    pub fn push(&mut self, tick: u64, value: T) {
+    /// Returns false when the stable event sequence is exhausted.
+    pub fn push(&mut self, tick: u64, value: T) -> bool {
+        let Some(next) = self.seq.checked_add(1) else {
+            return false;
+        };
         self.queue.push(Entry {
             tick,
             seq: self.seq,
             value,
         });
-        self.seq += 1;
+        self.seq = next;
+        true
     }
 
     pub fn pop_due(&mut self, tick: u64) -> Option<T> {
@@ -80,5 +85,21 @@ impl<T> EventQueue<T> {
             .collect();
         events.sort_unstable_by_key(|&(tick, seq, _)| (tick, seq));
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventQueue;
+
+    #[test]
+    fn exhausted_sequence_rejects_scheduling_without_wrapping() {
+        let mut queue = EventQueue::with_capacity(1);
+        queue.seq = u64::MAX - 1;
+        assert!(queue.push(5, 1));
+        assert!(!queue.push(5, 2));
+        assert_eq!(queue.sequence(), u64::MAX);
+        assert_eq!(queue.pop_due(5), Some(1));
+        assert_eq!(queue.pop_due(5), None);
     }
 }

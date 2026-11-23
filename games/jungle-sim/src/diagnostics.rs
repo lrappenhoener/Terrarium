@@ -1,7 +1,7 @@
-use sim_core::entity::EntityId;
+use sim_core::{entity::EntityId, space::SpatialIndex};
 use sim_host::{SimError, SimMetrics, StateHasher};
 
-use crate::{BIOMASS_CAP, Event, HEALTH, JungleSim, NEED_LIMIT, Species};
+use crate::{BIOMASS_CAP, Event, HEALTH, JungleSim, NEED_LIMIT, Species, spatial_entries};
 
 impl JungleSim {
     #[allow(clippy::float_arithmetic)]
@@ -179,7 +179,11 @@ impl JungleSim {
 
     pub(crate) fn validate_state(&self) -> Result<(), SimError> {
         let fail = |message: &str| SimError::InvariantViolation(message.into());
-        if self.spatial.len() != self.allocator.len()
+        let size = self.config.world_size;
+        let mut spatial = SpatialIndex::new(size, size, 8, 2, self.allocator.len())
+            .ok_or_else(|| fail("cannot construct invariant index"))?;
+        spatial.rebuild(spatial_entries(&self.allocator, &self.columns));
+        if spatial.len() != self.allocator.len()
             || self.columns.position.len() != self.allocator.len()
             || self.columns.vitals.len() != self.allocator.len()
             || self.occupied.iter().flatten().count() != self.allocator.len()
@@ -209,8 +213,7 @@ impl JungleSim {
             }) {
                 return Err(fail("valid herd ID must name a herbivore"));
             }
-            self.spatial
-                .query_radius(point, 0, 1 << a.species.index(), &mut hits);
+            spatial.query_radius(point, 0, 1 << a.species.index(), &mut hits);
             if hits.len() != 1 || hits[0].id != id || Some(hits[0].slot) != self.allocator.slot(id)
             {
                 return Err(fail("spatial index differs from live positions"));
