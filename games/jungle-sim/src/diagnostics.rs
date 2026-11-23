@@ -10,7 +10,7 @@ impl JungleSim {
         let hunger = self
             .allocator
             .iter()
-            .filter_map(|id| self.vitals.get(id))
+            .filter_map(|id| self.vitals(id))
             .map(|vitals| u64::from(vitals.hunger))
             .sum::<u64>();
         let biomass = self
@@ -60,8 +60,8 @@ impl JungleSim {
         let mut animals = StateHasher::new();
         self.allocator.hash_state(&mut animals);
         animals.write_usize(self.allocator.len());
-        for id in self.allocator.iter() {
-            if let (Some(a), Some(p)) = (self.vitals.get(id), self.position.get(id)) {
+        for id in self.allocator.iter_by_id() {
+            if let (Some(a), Some(p)) = (self.vitals(id), self.position(id)) {
                 animals.write_u64(id.to_u64());
                 animals.write_u32(p.x as u32);
                 animals.write_u32(p.y as u32);
@@ -146,8 +146,8 @@ impl JungleSim {
         if !self.allocator.is_alive(id) {
             return None;
         }
-        let point = self.position.get(id)?;
-        let a = self.vitals.get(id)?;
+        let point = self.position(id)?;
+        let a = self.vitals(id)?;
         let reference = |id: Option<EntityId>| {
             id.filter(|&id| self.allocator.is_alive(id))
                 .map_or_else(|| "none".into(), |id| id.to_u64().to_string())
@@ -181,8 +181,8 @@ impl JungleSim {
     pub(crate) fn validate_state(&self) -> Result<(), SimError> {
         let fail = |message: &str| SimError::InvariantViolation(message.into());
         if self.spatial.len() != self.allocator.len()
-            || self.position.iter().count() != self.allocator.len()
-            || self.vitals.iter().count() != self.allocator.len()
+            || self.columns.position.len() != self.allocator.len()
+            || self.columns.vitals.len() != self.allocator.len()
             || self.occupied.as_slice().iter().flatten().count() != self.allocator.len()
         {
             return Err(fail("allocator, occupancy, and component counts differ"));
@@ -190,13 +190,9 @@ impl JungleSim {
         let mut population = [0; 2];
         let mut hits = Vec::with_capacity(1);
         for id in self.allocator.iter() {
-            let &point = self
-                .position
-                .get(id)
-                .ok_or_else(|| fail("missing position"))?;
+            let &point = self.position(id).ok_or_else(|| fail("missing position"))?;
             let a = self
-                .vitals
-                .get(id)
+                .vitals(id)
                 .ok_or_else(|| fail("missing animal needs"))?;
             if !self.world.get(point).is_some_and(|t| t.walkable())
                 || self.occupied.get(point) != Some(&Some(id))
@@ -209,14 +205,14 @@ impl JungleSim {
             if a.herd.is_some_and(|herd| {
                 self.allocator.is_alive(herd)
                     && self
-                        .vitals
-                        .get(herd)
+                        .vitals(herd)
                         .is_none_or(|member| member.species != Species::Herbivore)
             }) {
                 return Err(fail("valid herd ID must name a herbivore"));
             }
             self.spatial.query_radius(point, 0, &mut hits);
-            if hits.as_slice() != [id] {
+            if hits.len() != 1 || hits[0].id != id || Some(hits[0].slot) != self.allocator.slot(id)
+            {
                 return Err(fail("spatial index differs from live positions"));
             }
             population[a.species.index()] += 1;

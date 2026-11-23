@@ -241,3 +241,178 @@ impl<T> EntityCommandBuffer<T> {
         }
     }
 }
+/// Maps stable generational IDs to dense, transient component slots.
+pub struct EntityTable {
+    allocator: EntityAllocator,
+    by_index: Vec<u32>,
+    by_slot: Vec<EntityId>,
+}
+
+impl EntityTable {
+    pub fn with_capacity(capacity: u32) -> Self {
+        Self {
+            allocator: EntityAllocator::with_capacity(capacity),
+            by_index: vec![u32::MAX; capacity as usize],
+            by_slot: Vec::with_capacity(capacity as usize),
+        }
+    }
+
+    pub fn create(&mut self) -> Option<EntityId> {
+        let id = self.allocator.create()?;
+        self.by_index[id.index as usize] = self.by_slot.len() as u32;
+        self.by_slot.push(id);
+        Some(id)
+    }
+
+    /// Removes the ID and returns the slot to swap-remove from component columns.
+    pub fn destroy(&mut self, id: EntityId) -> Option<u32> {
+        let slot = self.slot(id)?;
+        self.allocator.destroy(id);
+        self.by_slot.swap_remove(slot as usize);
+        self.by_index[id.index as usize] = u32::MAX;
+        if let Some(&swapped) = self.by_slot.get(slot as usize) {
+            self.by_index[swapped.index as usize] = slot;
+        }
+        Some(slot)
+    }
+
+    pub fn slot(&self, id: EntityId) -> Option<u32> {
+        let &slot = self.by_index.get(id.index as usize)?;
+        (self.by_slot.get(slot as usize) == Some(&id)).then_some(slot)
+    }
+
+    pub fn id(&self, slot: u32) -> Option<EntityId> {
+        self.by_slot.get(slot as usize).copied()
+    }
+
+    pub fn is_alive(&self, id: EntityId) -> bool {
+        self.slot(id).is_some()
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_slot.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_slot.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.by_slot.iter().copied()
+    }
+
+    pub fn iter_by_id(&self) -> impl Iterator<Item = EntityId> + '_ {
+        self.allocator.iter()
+    }
+
+    pub fn hash_state(&self, hash: &mut StateHasher) {
+        self.allocator.hash_state(hash);
+    }
+
+    /// Reorders slots using a validated destination-to-source permutation.
+    pub fn apply_permutation(&mut self, permutation: &SlotPermutation) -> bool {
+        if !permutation.apply(&mut self.by_slot) {
+            return false;
+        }
+        for (slot, id) in self.by_slot.iter().enumerate() {
+            self.by_index[id.index as usize] = slot as u32;
+        }
+        true
+    }
+}
+
+/// Preallocated swaps for a bijection from destination slots to source slots.
+pub struct SlotPermutation {
+    destinations: Vec<usize>,
+    swaps: Vec<(usize, usize)>,
+    valid: bool,
+}
+
+impl SlotPermutation {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            destinations: Vec::with_capacity(capacity),
+            swaps: Vec::with_capacity(capacity),
+            valid: false,
+        }
+    }
+
+    /// Compiles and validates a permutation once so it can be applied to every column.
+    pub fn prepare(&mut self, sources: &[usize]) -> bool {
+        self.valid = false;
+        self.destinations.clear();
+        self.destinations.resize(sources.len(), usize::MAX);
+        self.swaps.clear();
+        for (destination, &source) in sources.iter().enumerate() {
+            let Some(slot) = self.destinations.get_mut(source) else {
+                return false;
+            };
+            if *slot != usize::MAX {
+                return false;
+            }
+            *slot = destination;
+        }
+        for slot in 0..sources.len() {
+            while self.destinations[slot] != slot {
+                let other = self.destinations[slot];
+                self.destinations.swap(slot, other);
+                self.swaps.push((slot, other));
+            }
+        }
+        self.valid = true;
+        true
+    }
+
+    pub fn matches(&self, len: usize) -> bool {
+        self.valid && self.destinations.len() == len
+    }
+
+    pub fn apply<T>(&self, values: &mut [T]) -> bool {
+        if !self.matches(values.len()) {
+            return false;
+        }
+        for &(a, b) in &self.swaps {
+            values.swap(a, b);
+        }
+        true
+    }
+}
+
+/// Declares dense component columns that share the same lifecycle and permutation.
+#[macro_export]
+macro_rules! entity_columns {
+    ($vis:vis struct $name:ident { $($field:ident : $type:ty),+ $(,)? }) => {
+        $vis struct $name { $( $field: Vec<$type>, )+ }
+
+        #[allow(dead_code)] // Groups expose the same operations regardless of which callers need them.
+        impl $name {
+            $vis fn with_capacity(capacity: usize) -> Self {
+                Self { $($field: Vec::with_capacity(capacity),)+ }
+            }
+
+            $vis fn push(&mut self, $($field: $type),+) {
+                $(self.$field.push($field);)+
+            }
+
+            $vis fn swap_remove(&mut self, slot: u32) -> Option<($($type,)+)> {
+                let slot = slot as usize;
+                if slot >= self.len() { return None; }
+                Some(($(self.$field.swap_remove(slot),)+))
+            }
+
+            $vis fn len(&self) -> usize {
+                let lengths = [$(self.$field.len()),+];
+                debug_assert!(lengths.iter().all(|len| *len == lengths[0]));
+                lengths[0]
+            }
+
+            $vis fn is_empty(&self) -> bool { self.len() == 0 }
+
+            $vis fn apply_permutation(&mut self, permutation: &$crate::entity::SlotPermutation) -> bool {
+                if !permutation.matches(self.len()) { return false; }
+                $(permutation.apply(&mut self.$field);)+
+                true
+            }
+        }
+    };
+}

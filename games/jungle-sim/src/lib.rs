@@ -12,13 +12,11 @@ use std::cmp::Reverse;
 pub use config::{JungleConfig, Species, SpeciesConfig};
 use serde::{Deserialize, Serialize};
 use sim_core::{
-    entity::{
-        DenseStorage, EntityAllocator, EntityCommand, EntityCommandBuffer, EntityId, SparseStorage,
-    },
+    entity::{EntityCommand, EntityCommandBuffer, EntityId, EntityTable, SparseStorage},
     intent::IntentBuffer,
     rng::{SystemRng, below, stateless_u64},
     schedule::EventQueue,
-    space::{Grid2, Point, SpatialIndex},
+    space::{Grid2, Point, SpatialHit, SpatialIndex},
 };
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
@@ -82,6 +80,10 @@ enum Death {
     Age,
 }
 
+sim_core::entity_columns! {
+    struct AnimalColumns { position: Point, vitals: Vitals }
+}
+
 pub struct JungleSim {
     config: JungleConfig,
     seed: u64,
@@ -89,14 +91,13 @@ pub struct JungleSim {
     world: Grid2<Tile>,
     walkable: usize,
     occupied: Grid2<Option<EntityId>>,
-    allocator: EntityAllocator,
-    position: DenseStorage<Point>,
-    vitals: DenseStorage<Vitals>,
+    allocator: EntityTable,
+    columns: AnimalColumns,
     hunting: SparseStorage<EntityId>,
     pregnant: SparseStorage<u64>,
     spatial: SpatialIndex,
-    locations: Vec<(EntityId, Point)>,
-    nearby: Vec<EntityId>,
+    locations: Vec<(SpatialHit, Point)>,
+    nearby: Vec<SpatialHit>,
     decisions: Vec<(EntityId, Decision)>,
     moves: IntentBuffer<Point, ()>,
     attacks: IntentBuffer<EntityId, u16>,
@@ -114,6 +115,14 @@ pub struct JungleSim {
 }
 
 impl JungleSim {
+    fn position(&self, id: EntityId) -> Option<&Point> {
+        self.columns.position.get(self.allocator.slot(id)? as usize)
+    }
+
+    fn vitals(&self, id: EntityId) -> Option<&Vitals> {
+        self.columns.vitals.get(self.allocator.slot(id)? as usize)
+    }
+
     fn commands(&mut self, commands: &[JungleCommand]) {
         let room = self.config.max_animals as usize - self.allocator.len();
         let mut accepted = 0;
@@ -149,7 +158,17 @@ impl JungleSim {
         self.locations.extend(
             self.allocator
                 .iter()
-                .filter_map(|id| self.position.get(id).map(|&point| (id, point))),
+                .zip(self.columns.position.iter().copied())
+                .enumerate()
+                .map(|(slot, (id, point))| {
+                    (
+                        SpatialHit {
+                            id,
+                            slot: slot as u32,
+                        },
+                        point,
+                    )
+                }),
         );
         self.spatial.rebuild(self.locations.iter().copied());
     }
@@ -194,9 +213,8 @@ impl JungleSim {
         } else {
             0
         };
-        self.position.insert(id, point);
-        self.vitals.insert(
-            id,
+        self.columns.push(
+            point,
             Vitals {
                 species,
                 hunger: below(random(2), 50) as u16,
@@ -214,11 +232,9 @@ impl JungleSim {
     }
 
     fn despawn(&mut self, id: EntityId) {
-        if self.allocator.destroy(id) {
-            if let Some(vitals) = self.vitals.remove(id) {
+        if let Some(slot) = self.allocator.destroy(id) {
+            if let Some((point, vitals)) = self.columns.swap_remove(slot) {
                 self.population[vitals.species.index()] -= 1;
-            }
-            if let Some(point) = self.position.remove(id) {
                 self.occupied.set(point, None);
             }
             self.hunting.remove(id);
@@ -228,7 +244,7 @@ impl JungleSim {
 
     fn decide(&mut self) {
         self.decisions.clear();
-        for id in self.allocator.iter() {
+        for (slot, id) in self.allocator.iter().enumerate() {
             if sim_core::schedule::staggered(
                 self.tick,
                 self.config.think_interval,
@@ -239,8 +255,7 @@ impl JungleSim {
                     world: &self.world,
                     occupied: &self.occupied,
                     allocator: &self.allocator,
-                    positions: &self.position,
-                    animals: &self.vitals,
+                    columns: &self.columns,
                     hunting: &self.hunting,
                     pregnant: &self.pregnant,
                     spatial: &self.spatial,
@@ -250,6 +265,7 @@ impl JungleSim {
                     seed: self.seed,
                 },
                 id,
+                slot,
                 &mut self.nearby,
                 &mut self.query_counts,
             ) {
@@ -273,6 +289,10 @@ impl JungleSim {
                 Intent::None => {}
             }
         }
+        self.effects.sort_unstable_by_key(|effect| match *effect {
+            Effect::Drink(id) | Effect::Gestate(id) => id,
+            _ => EXTERNAL,
+        });
         self.moves.resolve(
             |_| (),
             |&(point, id, ()), _| self.effects.push(Effect::Move(id, point)),
@@ -296,7 +316,11 @@ impl JungleSim {
 
     fn apply_effects(&mut self) {
         for &(id, ref decision) in &self.decisions {
-            if let Some(animal) = self.vitals.get_mut(id) {
+            if let Some(animal) = self
+                .allocator
+                .slot(id)
+                .and_then(|slot| self.columns.vitals.get_mut(slot as usize))
+            {
                 animal.action = decision.action;
                 animal.herd = decision.herd;
             }
@@ -306,28 +330,26 @@ impl JungleSim {
                 self.hunting.remove(id);
             }
         }
-        for id in self.allocator.iter() {
-            if let Some(animal) = self.vitals.get_mut(id) {
-                let params = self.config.species(animal.species);
-                animal.hunger = animal
-                    .hunger
-                    .saturating_add(params.hunger_rate)
-                    .min(NEED_LIMIT);
-                animal.thirst = animal
-                    .thirst
-                    .saturating_add(params.thirst_rate)
-                    .min(NEED_LIMIT);
-                animal.age = animal.age.saturating_add(1);
-            }
+        for animal in &mut self.columns.vitals {
+            let params = self.config.species(animal.species);
+            animal.hunger = animal
+                .hunger
+                .saturating_add(params.hunger_rate)
+                .min(NEED_LIMIT);
+            animal.thirst = animal
+                .thirst
+                .saturating_add(params.thirst_rate)
+                .min(NEED_LIMIT);
+            animal.age = animal.age.saturating_add(1);
         }
         for index in 0..self.effects.len() {
             match self.effects[index] {
                 Effect::Move(id, point) => {
-                    if let (Some(old), Some(animal), Some(tile)) = (
-                        self.position.get_mut(id),
-                        self.vitals.get_mut(id),
-                        self.world.get(point),
-                    ) {
+                    if let (Some(slot), Some(tile)) =
+                        (self.allocator.slot(id), self.world.get(point))
+                    {
+                        let old = &mut self.columns.position[slot as usize];
+                        let animal = &mut self.columns.vitals[slot as usize];
                         self.occupied.set(*old, None);
                         self.occupied.set(point, Some(id));
                         *old = point;
@@ -343,13 +365,17 @@ impl JungleSim {
                 Effect::Attack(id, target) => {
                     let damage = self.config.predator.attack_strength;
                     if let Some(prey) = self
-                        .vitals
-                        .get_mut(target)
+                        .allocator
+                        .slot(target)
+                        .and_then(|slot| self.columns.vitals.get_mut(slot as usize))
                         .filter(|vitals| vitals.health != 0)
                     {
                         prey.health = prey.health.saturating_sub(damage);
                         if prey.health == 0
-                            && let Some(hunter) = self.vitals.get_mut(id)
+                            && let Some(hunter) = self
+                                .allocator
+                                .slot(id)
+                                .and_then(|slot| self.columns.vitals.get_mut(slot as usize))
                         {
                             hunter.hunger = 0;
                         }
@@ -357,17 +383,25 @@ impl JungleSim {
                 }
                 Effect::Eat(id, tile, taken) => {
                     self.world.as_mut_slice()[tile].biomass -= taken;
-                    if let Some(animal) = self.vitals.get_mut(id) {
+                    if let Some(animal) = self
+                        .allocator
+                        .slot(id)
+                        .and_then(|slot| self.columns.vitals.get_mut(slot as usize))
+                    {
                         animal.hunger = animal.hunger.saturating_sub(taken);
                     }
                 }
                 Effect::Drink(id) => {
-                    if let Some(animal) = self.vitals.get_mut(id) {
+                    if let Some(animal) = self
+                        .allocator
+                        .slot(id)
+                        .and_then(|slot| self.columns.vitals.get_mut(slot as usize))
+                    {
                         animal.thirst = 0;
                     }
                 }
                 Effect::Gestate(id) => {
-                    if let Some(animal) = self.vitals.get(id) {
+                    if let Some(animal) = self.vitals(id) {
                         let deadline = self
                             .tick
                             .saturating_add(self.config.species(animal.species).gestation_ticks);
@@ -401,7 +435,7 @@ impl JungleSim {
 
     fn lifecycle(&mut self) {
         for id in self.allocator.iter() {
-            if let Some(animal) = self.vitals.get(id) {
+            if let Some(animal) = self.vitals(id) {
                 let cause = if animal.health == 0 {
                     Some(Death::Predation)
                 } else if animal.hunger >= NEED_LIMIT {
@@ -423,8 +457,7 @@ impl JungleSim {
             match event {
                 Event::Birth(id) => {
                     self.pregnant.remove(id);
-                    if let (Some(vitals), Some(&at)) = (self.vitals.get(id), self.position.get(id))
-                    {
+                    if let (Some(vitals), Some(&at)) = (self.vitals(id), self.position(id)) {
                         self.commands.push(
                             id,
                             1,
@@ -504,9 +537,8 @@ impl Simulation for JungleSim {
             walkable,
             occupied,
             spatial,
-            allocator: EntityAllocator::with_capacity(cap),
-            position: DenseStorage::with_capacity(cap),
-            vitals: DenseStorage::with_capacity(cap),
+            allocator: EntityTable::with_capacity(cap),
+            columns: AnimalColumns::with_capacity(n),
             hunting: SparseStorage::with_capacity(cap),
             pregnant: SparseStorage::with_capacity(cap),
             locations: Vec::with_capacity(n),

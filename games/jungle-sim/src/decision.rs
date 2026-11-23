@@ -1,12 +1,12 @@
 use sim_core::{
     behavior::select_best,
-    entity::{DenseStorage, EntityAllocator, EntityId, SparseStorage},
+    entity::{EntityId, EntityTable, SparseStorage},
     rng::{below, stateless_u64},
-    space::{Grid2, Point, SpatialIndex},
+    space::{Grid2, Point, SpatialHit, SpatialIndex},
 };
 
 use crate::{
-    JungleConfig, Species, Vitals,
+    AnimalColumns, JungleConfig, Species,
     world::{Tile, neighbors},
 };
 
@@ -70,9 +70,8 @@ pub(crate) struct View<'a> {
     pub config: &'a JungleConfig,
     pub world: &'a Grid2<Tile>,
     pub occupied: &'a Grid2<Option<EntityId>>,
-    pub allocator: &'a EntityAllocator,
-    pub positions: &'a DenseStorage<Point>,
-    pub animals: &'a DenseStorage<Vitals>,
+    pub allocator: &'a EntityTable,
+    pub columns: &'a AnimalColumns,
     pub hunting: &'a SparseStorage<EntityId>,
     pub pregnant: &'a SparseStorage<u64>,
     pub spatial: &'a SpatialIndex,
@@ -84,8 +83,10 @@ pub(crate) struct View<'a> {
 
 impl View<'_> {
     fn position(&self, id: EntityId) -> Option<Point> {
-        self.allocator.is_alive(id).then_some(())?;
-        self.positions.get(id).copied()
+        self.columns
+            .position
+            .get(self.allocator.slot(id)? as usize)
+            .copied()
     }
 
     fn move_to(&self, point: Point, random: u64, score: impl Fn(Point, Tile) -> i64) -> Intent {
@@ -104,11 +105,12 @@ impl View<'_> {
 pub(crate) fn decide(
     view: View<'_>,
     id: EntityId,
-    out: &mut Vec<EntityId>,
+    slot: usize,
+    out: &mut Vec<SpatialHit>,
     query_counts: &mut [u128; 2],
 ) -> Option<Decision> {
-    let &animal = view.animals.get(id)?;
-    let point = view.position(id)?;
+    let &animal = view.columns.vitals.get(slot)?;
+    let &point = view.columns.position.get(slot)?;
     let tile = view.world.get(point)?;
     let params = view.config.species(animal.species);
     let herbivore = animal.species == Species::Herbivore;
@@ -119,11 +121,12 @@ pub(crate) fn decide(
         .query_radius(point, params.perception_radius, out) as u128;
     let mut closest = None;
     let mut closest_friend = None;
-    for &other in out.iter().filter(|&&other| other != id) {
-        if let (Some(other_animal), Some(other_point)) =
-            (view.animals.get(other), view.position(other))
-        {
-            let item = (point.distance_squared(other_point), other);
+    for &SpatialHit { id: other, slot } in out.iter().filter(|hit| hit.id != id) {
+        if let (Some(other_animal), Some(other_point)) = (
+            view.columns.vitals.get(slot as usize),
+            view.columns.position.get(slot as usize),
+        ) {
+            let item = (point.distance_squared(*other_point), other);
             if other_animal.species == animal.species {
                 closest_friend =
                     Some(closest_friend.map_or(item, |best: (u128, EntityId)| best.min(item)));

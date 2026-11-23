@@ -71,7 +71,11 @@ fn a_destination_can_only_have_one_winner() {
     sim.resolve();
     sim.apply_effects();
     assert_eq!(
-        sim.position.iter().filter(|(_, p)| **p == target).count(),
+        sim.columns
+            .position
+            .iter()
+            .filter(|p| **p == target)
+            .count(),
         1
     );
     assert_eq!(sim.occupied.get(target).unwrap().unwrap().index, 0);
@@ -86,7 +90,7 @@ fn the_hungriest_hunter_wins_and_ties_use_the_smaller_id() {
         assert!(sim.spawn_at(Species::Herbivore, point(6, 5), false));
         let ids: Vec<_> = sim.allocator.iter().collect();
         for (i, hunger) in [first, second].into_iter().enumerate() {
-            sim.vitals.get_mut(ids[i]).unwrap().hunger = hunger;
+            sim.columns.vitals[sim.allocator.slot(ids[i]).unwrap() as usize].hunger = hunger;
             sim.decisions.push((
                 ids[i],
                 Decision {
@@ -101,8 +105,8 @@ fn the_hungriest_hunter_wins_and_ties_use_the_smaller_id() {
         sim.apply_effects();
         sim.lifecycle();
         assert_eq!(sim.deaths[0], 1);
-        assert_eq!(sim.vitals.get(ids[winner]).unwrap().hunger, 0);
-        assert_ne!(sim.vitals.get(ids[1 - winner]).unwrap().hunger, 0);
+        assert_eq!(sim.vitals(ids[winner]).unwrap().hunger, 0);
+        assert_ne!(sim.vitals(ids[1 - winner]).unwrap().hunger, 0);
     }
 }
 
@@ -115,7 +119,7 @@ fn a_stale_target_is_replaced_after_its_slot_is_reused() {
     sim.hunting.insert(ids[0], ids[1]);
     sim.despawn(ids[1]);
     assert!(sim.spawn_at(Species::Herbivore, point(5, 6), false));
-    sim.vitals.get_mut(ids[0]).unwrap().hunger = 40;
+    sim.columns.vitals[sim.allocator.slot(ids[0]).unwrap() as usize].hunger = 40;
     let replacement = sim.allocator.iter().nth(1).unwrap();
     assert_eq!(ids[1].index, replacement.index);
     assert!(!sim.allocator.is_alive(ids[1]));

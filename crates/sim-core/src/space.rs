@@ -72,6 +72,13 @@ fn area(width: i32, height: i32) -> Option<usize> {
     (width as usize).checked_mul(height as usize)
 }
 
+/// Stable query identity and the associated slot in the current snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpatialHit {
+    pub id: EntityId,
+    pub slot: u32,
+}
+
 pub struct SpatialIndex {
     width: i32,
     height: i32,
@@ -79,7 +86,7 @@ pub struct SpatialIndex {
     columns: usize,
     offsets: Vec<usize>,
     cursors: Vec<usize>,
-    entries: Vec<(EntityId, Point)>,
+    entries: Vec<(SpatialHit, Point)>,
 }
 
 impl SpatialIndex {
@@ -107,7 +114,7 @@ impl SpatialIndex {
         })
     }
 
-    pub fn rebuild(&mut self, entries: impl Iterator<Item = (EntityId, Point)> + Clone) {
+    pub fn rebuild(&mut self, entries: impl Iterator<Item = (SpatialHit, Point)> + Clone) {
         self.offsets.fill(0);
         for (_, point) in entries.clone() {
             if let Some(cell) = self.cell(point) {
@@ -118,8 +125,16 @@ impl SpatialIndex {
             self.offsets[i] += self.offsets[i - 1];
         }
         let len = self.offsets[self.cursors.len()];
-        self.entries
-            .resize(len, (EntityId::from_u64(0), Point { x: 0, y: 0 }));
+        self.entries.resize(
+            len,
+            (
+                SpatialHit {
+                    id: EntityId::from_u64(0),
+                    slot: 0,
+                },
+                Point { x: 0, y: 0 },
+            ),
+        );
         let cells = self.cursors.len();
         self.cursors.copy_from_slice(&self.offsets[..cells]);
         for (id, point) in entries {
@@ -138,7 +153,7 @@ impl SpatialIndex {
         self.entries.is_empty()
     }
 
-    pub fn query_radius(&self, center: Point, radius: u32, out: &mut Vec<EntityId>) -> usize {
+    pub fn query_radius(&self, center: Point, radius: u32, out: &mut Vec<SpatialHit>) -> usize {
         out.clear();
         let radius = i64::from(radius);
         let min_x = (i64::from(center.x) - radius).max(0);
@@ -162,7 +177,7 @@ impl SpatialIndex {
                 }
             }
         }
-        out.sort_unstable();
+        out.sort_unstable_by_key(|hit| hit.id);
         candidates
     }
 }

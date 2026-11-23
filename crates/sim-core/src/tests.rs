@@ -6,7 +6,7 @@ use crate::{
     intent::IntentBuffer,
     rng::{SystemRng, below, stateless_u64},
     schedule::{EventQueue, staggered},
-    space::{Grid2, Point, SpatialIndex},
+    space::{Grid2, Point, SpatialHit, SpatialIndex},
 };
 
 fn id(index: u32) -> EntityId {
@@ -78,7 +78,7 @@ fn spatial_queries_match_brute_force() {
                 x: below(rng.next_u64(), 71) as i32,
                 y: below(rng.next_u64(), 53) as i32,
             };
-            entries.push((id(i), point));
+            entries.push((SpatialHit { id: id(i), slot: i }, point));
         }
         index.rebuild(entries.iter().copied());
         let mut hits = Vec::new();
@@ -170,4 +170,72 @@ fn command_buffer_ignores_collection_order() {
         apply(&[(1, 0, "b"), (0, 0, "a"), (1, 1, "c")]),
         ["a", "b", "c"]
     );
+}
+
+#[test]
+fn dense_slots_and_columns_survive_lifecycle_and_permutations() {
+    use crate::entity::{EntityTable, SlotPermutation};
+    crate::entity_columns! {
+        struct Columns { id_bits: u64, inverse: u64 }
+    }
+
+    for seed in [1, 2, 42] {
+        let mut rng = SystemRng::new(seed, 14);
+        let mut original = EntityAllocator::with_capacity(48);
+        let mut table = EntityTable::with_capacity(48);
+        let mut columns = Columns::with_capacity(48);
+        let mut permutation = SlotPermutation::with_capacity(48);
+        for _ in 0..1000 {
+            match below(rng.next_u64(), 3) {
+                0 => {
+                    let id = table.create();
+                    assert_eq!(id, original.create());
+                    if let Some(id) = id {
+                        columns.push(id.to_u64(), !id.to_u64());
+                    }
+                }
+                1 if !table.is_empty() => {
+                    let slot = below(rng.next_u64(), table.len() as u64) as u32;
+                    let id = table.id(slot).unwrap();
+                    assert_eq!(table.destroy(id), Some(slot));
+                    assert!(original.destroy(id));
+                    assert_eq!(columns.swap_remove(slot), Some((id.to_u64(), !id.to_u64())));
+                    assert!(!table.is_alive(id));
+                }
+                _ => {
+                    let mut sources: Vec<_> = (0..table.len()).collect();
+                    for end in (1..sources.len()).rev() {
+                        sources.swap(end, below(rng.next_u64(), end as u64 + 1) as usize);
+                    }
+                    assert!(permutation.prepare(&sources));
+                    assert!(table.apply_permutation(&permutation));
+                    assert!(columns.apply_permutation(&permutation));
+                }
+            }
+            assert_eq!(table.len(), columns.len());
+            assert_eq!(
+                table.iter_by_id().collect::<Vec<_>>(),
+                original.iter().collect::<Vec<_>>()
+            );
+            for (slot, id) in table.iter().enumerate() {
+                assert_eq!(table.slot(id), Some(slot as u32));
+                assert_eq!(table.id(slot as u32), Some(id));
+                assert_eq!(columns.id_bits[slot], id.to_u64());
+                assert_eq!(columns.inverse[slot], !id.to_u64());
+            }
+        }
+        assert!(!permutation.prepare(&[0, 0]));
+    }
+}
+
+#[test]
+fn entity_table_rejects_an_old_generation_after_reuse() {
+    let mut table = crate::entity::EntityTable::with_capacity(1);
+    let old = table.create().unwrap();
+    assert_eq!(table.destroy(old), Some(0));
+    let new = table.create().unwrap();
+    assert_eq!(new.index, old.index);
+    assert_ne!(old.generation, new.generation);
+    assert_eq!(table.slot(old), None);
+    assert_eq!(table.slot(new), Some(0));
 }
