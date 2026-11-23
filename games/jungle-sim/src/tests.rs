@@ -185,5 +185,5 @@ fn golden_hash_at_tick_1000() {
     for _ in 0..1000 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x9498cee015167101);
+    assert_eq!(sim.state_hash(), 0x5317cfd6e2e12024);
 }

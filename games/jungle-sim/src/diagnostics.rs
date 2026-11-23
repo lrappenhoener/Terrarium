@@ -50,7 +50,7 @@ impl JungleSim {
 
     pub(crate) fn hashes(&self) -> [(&'static str, u64); 4] {
         let mut world = StateHasher::new();
-        world.write_usize(self.world.as_slice().len());
+        world.write_u32(self.config.world_size as u32);
         for tile in self.world.as_slice() {
             world.write_u8(tile.terrain as u8);
             world.write_u32(u32::from(tile.biomass));
@@ -59,6 +59,7 @@ impl JungleSim {
 
         let mut animals = StateHasher::new();
         self.allocator.hash_state(&mut animals);
+        animals.write_usize(self.allocator.len());
         for id in self.allocator.iter() {
             if let (Some(a), Some(p)) = (self.vitals.get(id), self.position.get(id)) {
                 animals.write_u64(id.to_u64());
@@ -71,18 +72,25 @@ impl JungleSim {
                 animals.write_u64(a.age);
                 animals.write_u64(a.move_at);
                 animals.write_u8(a.action as u8);
-                for reference in [a.herd, self.hunting.get(id).copied()] {
-                    animals.write_bool(reference.is_some());
-                    if let Some(reference) = reference {
-                        animals.write_u64(reference.to_u64());
-                    }
-                }
-                let pregnancy = self.pregnant.get(id);
-                animals.write_bool(pregnancy.is_some());
-                if let Some(&deadline) = pregnancy {
-                    animals.write_u64(deadline);
+                animals.write_bool(a.herd.is_some());
+                if let Some(herd) = a.herd {
+                    animals.write_u64(herd.to_u64());
                 }
             }
+        }
+        let mut hunting: Vec<_> = self.hunting.iter().collect();
+        hunting.sort_unstable_by_key(|&(id, _)| id);
+        animals.write_usize(hunting.len());
+        for (id, target) in hunting {
+            animals.write_u64(id.to_u64());
+            animals.write_u64(target.to_u64());
+        }
+        let mut pregnant: Vec<_> = self.pregnant.iter().collect();
+        pregnant.sort_unstable_by_key(|&(id, _)| id);
+        animals.write_usize(pregnant.len());
+        for (id, &deadline) in pregnant {
+            animals.write_u64(id.to_u64());
+            animals.write_u64(deadline);
         }
 
         let mut scheduler = StateHasher::new();
@@ -127,6 +135,7 @@ impl JungleSim {
 
     pub(crate) fn hash_state(&self) -> u64 {
         let mut combined = StateHasher::new();
+        combined.write_bytes(b"jungle-logical-v1");
         for (_, hash) in self.hashes() {
             combined.write_u64(hash);
         }

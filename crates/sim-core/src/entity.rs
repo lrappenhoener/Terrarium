@@ -103,12 +103,11 @@ impl EntityAllocator {
             })
     }
 
+    /// Hashes ID history. The caller hashes allocation capacity as configuration.
     pub fn hash_state(&self, hash: &mut StateHasher) {
-        hash.write_u32(self.capacity);
         hash.write_usize(self.slots.len());
         for slot in &self.slots {
             hash.write_u32(slot.generation);
-            hash.write_bool(slot.alive);
         }
         hash.write_usize(self.free.len());
         for &index in &self.free {

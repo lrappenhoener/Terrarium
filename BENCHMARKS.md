@@ -20,3 +20,15 @@ Drei vollständige Wiederholungen, Median pro Kennzahl. Die letzte Wiederholung 
 | Baseline | 2048 | 195779.000 | 411.684 | 329.535 | 0.391 | 19.854 | 48734.404 |
 
 Bei 512² und 2.048² lagen die mittleren tatsächlich aktiven Dichten bei 4,84 % und 4,67 %. Die Step-Kosten stiegen dennoch von 130,07 auf 411,68 ns pro Tier und Tick (Faktor 3,17). Die geprüften Kandidaten sanken von 21,59 auf 19,85 pro Abfrage. Der Anstieg steckt vor allem in `decide` (96,39 auf 329,53 ns pro Tier und Tick). Das stützt einen Lokalitäts- oder Working-Set-Effekt. Die Daten zeigen keine höhere Kandidatenzahl, und ohne Hardwarezähler lässt sich die Rolle von Cache-Misses nicht direkt bestimmen.
+
+## Bindende Referenz-Hashes nach Schritt 3
+
+Jungle mit Seed 42 und Standardkonfiguration, Hashformat `jungle-logical-v1`. Dummy bleibt bei `0x20f21cbeee53c309` nach 1.000 Ticks.
+
+| Tick | Jungle-Hash |
+| ---: | --- |
+| 1.000 | `0x5317cfd6e2e12024` |
+| 2.000 | `0x44474e7d7fe88ec9` |
+| 3.000 | `0xf3dab8f7d47ddfe7` |
+| 4.000 | `0xb351dbf937784ff1` |
+| 5.000 | `0x19eb3e87d333006d` |
