@@ -52,6 +52,19 @@ struct Vitals {
     herd: Option<EntityId>,
 }
 
+// Field order matches the reference encoding of `jungle-logical-v1`.
+sim_core::state_hash_struct!(Vitals {
+    species,
+    hunger,
+    thirst,
+    health,
+    age,
+    move_at,
+    action,
+    herd
+});
+sim_core::state_hash_enum!(Species, Action);
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum Event {
     Birth(EntityId),
@@ -84,7 +97,7 @@ enum Death {
 }
 
 sim_core::entity_columns! {
-    struct AnimalColumns { position: Point, vitals: Vitals }
+    struct AnimalColumns, row AnimalRow { position: Point, vitals: Vitals }
 }
 
 fn spatial_entries<'a>(

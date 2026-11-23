@@ -316,3 +316,28 @@ fn golden_v1_snapshot_loads_and_reaches_reference() {
     }
     assert_eq!(sim.state_hash(), 0x22ed95e00104e9ba);
 }
+
+#[test]
+fn generated_rows_reencode_the_golden_snapshot_byte_for_byte() {
+    let bytes = include_bytes!("../tests/fixtures/jungle-v1-t500.bin");
+    let sim = JungleSim::load_snapshot(bytes).unwrap();
+    let mut encoded = Vec::new();
+    sim.save_snapshot(&mut encoded).unwrap();
+    assert_eq!(encoded.as_slice(), bytes.as_slice());
+}
+
+#[test]
+fn dump_lines_have_unique_tab_separated_keys() {
+    let mut sim = JungleSim::new(42, snapshot_config()).unwrap();
+    for _ in 0..50 {
+        sim.step(&[]);
+    }
+    let mut dump = String::new();
+    sim.debug_dump(&mut dump).unwrap();
+    let mut keys = std::collections::BTreeSet::new();
+    for line in dump.lines() {
+        let (key, _) = line.split_once('\t').unwrap();
+        assert!(keys.insert(key.to_owned()), "duplicate key {key}");
+    }
+    assert!(keys.iter().any(|key| key.starts_with("animal:")));
+}

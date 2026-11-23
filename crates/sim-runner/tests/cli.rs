@@ -347,7 +347,7 @@ commands = [{SpawnAnimals = {species = "Herbivore", count = 4}}]
         assert!(
             fs::read_to_string(dir.join("replay-t12.txt"))
                 .unwrap()
-                .starts_with("meta tick=12 ")
+                .starts_with("meta\ttick=12 ")
         );
         assert_eq!(second["state_hash"], first["state_hash"]);
     }

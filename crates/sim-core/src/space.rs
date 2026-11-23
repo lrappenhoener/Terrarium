@@ -370,3 +370,10 @@ impl<T> ChunkedGrid2<T> {
         }
     }
 }
+
+impl crate::state::StateHash for Point {
+    fn state_hash(&self, hash: &mut sim_host::StateHasher) {
+        crate::state::StateHash::state_hash(&self.x, hash);
+        crate::state::StateHash::state_hash(&self.y, hash);
+    }
+}

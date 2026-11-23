@@ -5,17 +5,17 @@ use sim_core::{
     entity::{AllocatorState, EntityId, EntityTable},
     rng::SystemRng,
     schedule::EventQueue,
-    space::{ChunkedGrid2, Point},
+    space::ChunkedGrid2,
 };
 use sim_host::{SimError, StateHasher};
 
-use crate::{BIOMASS_CAP, Event, JungleConfig, JungleSim, Terrain, Tile, Vitals, world};
+use crate::{AnimalRow, BIOMASS_CAP, Event, JungleConfig, JungleSim, Terrain, Tile, world};
 
 #[derive(Serialize, Deserialize)]
 struct Animal {
     id: EntityId,
-    position: Point,
-    vitals: Vitals,
+    // Postcard encodes the nested row exactly like its inlined fields.
+    row: AnimalRow,
     target: Option<EntityId>,
     pregnancy: Option<u64>,
 }
@@ -49,12 +49,14 @@ impl JungleSim {
             .allocator
             .iter_by_id()
             .map(|id| {
-                let &position = self.position(id).ok_or_else(|| fail("missing position"))?;
-                let &vitals = self.vitals(id).ok_or_else(|| fail("missing vitals"))?;
+                let row = self
+                    .allocator
+                    .slot(id)
+                    .and_then(|slot| self.columns.row(slot))
+                    .ok_or_else(|| fail("missing animal row"))?;
                 Ok(Animal {
                     id,
-                    position,
-                    vitals,
+                    row,
                     target: self.hunting.get(id).copied(),
                     pregnancy: self.pregnant.get(id).copied(),
                 })
@@ -144,11 +146,11 @@ impl JungleSim {
         )
         .ok_or_else(|| fail("invalid allocator state"))?;
         for animal in state.animals {
-            if !sim.open(animal.position) {
+            if !sim.open(animal.row.position) {
                 return Err(fail("invalid or occupied animal position"));
             }
-            sim.occupied.set(animal.position, Some(animal.id));
-            sim.columns.push(animal.position, animal.vitals);
+            sim.occupied.set(animal.row.position, Some(animal.id));
+            sim.columns.push_row(animal.row);
             if let Some(target) = animal.target {
                 sim.hunting.insert(animal.id, target);
             }
@@ -182,37 +184,44 @@ impl JungleSim {
         hash.finish()
     }
 
+    /// One `key<TAB>value` line per logical record, with unique stable keys.
     pub(crate) fn write_debug_dump(&self, out: &mut String) -> Result<(), SimError> {
         out.clear();
-        writeln!(out, "meta tick={} seed={} growth={} drought={:?} rng_word={} births={} deaths={:?} population={:?} queries={:?} config={:?}",
+        writeln!(out, "meta\ttick={} seed={} growth={} drought={:?} rng_word={} births={} deaths={:?} population={:?} queries={:?} config={:?}",
             self.tick, self.seed, self.growth, self.drought_until, self.spawn_rng.word_pos(), self.births, self.deaths,
             self.population, self.query_counts, self.config).map_err(fail)?;
-        writeln!(out, "allocator {:?}", self.allocator.snapshot_state()).map_err(fail)?;
+        writeln!(out, "allocator\t{:?}", self.allocator.snapshot_state()).map_err(fail)?;
         for id in self.allocator.iter_by_id() {
+            let Some(slot) = self.allocator.slot(id) else {
+                continue;
+            };
+            write!(out, "animal:{}:{}\t", id.index, id.generation).map_err(fail)?;
+            self.columns.dump_row(slot, out);
             writeln!(
                 out,
-                "animal {} position={:?} vitals={:?} target={:?} pregnancy={:?}",
-                id.to_u64(),
-                self.position(id),
-                self.vitals(id),
+                " target={:?} pregnancy={:?}",
                 self.hunting.get(id),
                 self.pregnant.get(id)
             )
             .map_err(fail)?;
         }
+        let size = self.config.world_size as usize;
         for (index, tile) in self.world.iter().enumerate() {
             if tile.terrain != Terrain::Grass || tile.biomass != BIOMASS_CAP {
                 writeln!(
                     out,
-                    "tile {index} {:?} biomass={}",
-                    tile.terrain, tile.biomass
+                    "tile:{},{}\t{:?} biomass={}",
+                    index % size,
+                    index / size,
+                    tile.terrain,
+                    tile.biomass
                 )
                 .map_err(fail)?;
             }
         }
-        writeln!(out, "scheduler sequence={}", self.events.sequence()).map_err(fail)?;
+        writeln!(out, "scheduler\tsequence={}", self.events.sequence()).map_err(fail)?;
         for (tick, seq, event) in self.events.sorted_events() {
-            writeln!(out, "event {tick} {seq} {event:?}").map_err(fail)?;
+            writeln!(out, "event:{seq}\ttick={tick} {event:?}").map_err(fail)?;
         }
         Ok(())
     }

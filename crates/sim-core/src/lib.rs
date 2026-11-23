@@ -8,6 +8,7 @@ pub mod intent;
 pub mod rng;
 pub mod schedule;
 pub mod space;
+pub mod state;
 
 #[cfg(test)]
 mod tests;

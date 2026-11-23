@@ -60,37 +60,13 @@ impl JungleSim {
         self.allocator.hash_state(&mut animals);
         animals.write_usize(self.allocator.len());
         for id in self.allocator.iter_by_id() {
-            if let (Some(a), Some(p)) = (self.vitals(id), self.position(id)) {
+            if let Some(slot) = self.allocator.slot(id) {
                 animals.write_u64(id.to_u64());
-                animals.write_u32(p.x as u32);
-                animals.write_u32(p.y as u32);
-                animals.write_u8(a.species as u8);
-                for value in [a.hunger, a.thirst, a.health] {
-                    animals.write_u32(u32::from(value));
-                }
-                animals.write_u64(a.age);
-                animals.write_u64(a.move_at);
-                animals.write_u8(a.action as u8);
-                animals.write_bool(a.herd.is_some());
-                if let Some(herd) = a.herd {
-                    animals.write_u64(herd.to_u64());
-                }
+                self.columns.hash_row(slot, &mut animals);
             }
         }
-        let mut hunting: Vec<_> = self.hunting.iter().collect();
-        hunting.sort_unstable_by_key(|&(id, _)| id);
-        animals.write_usize(hunting.len());
-        for (id, target) in hunting {
-            animals.write_u64(id.to_u64());
-            animals.write_u64(target.to_u64());
-        }
-        let mut pregnant: Vec<_> = self.pregnant.iter().collect();
-        pregnant.sort_unstable_by_key(|&(id, _)| id);
-        animals.write_usize(pregnant.len());
-        for (id, &deadline) in pregnant {
-            animals.write_u64(id.to_u64());
-            animals.write_u64(deadline);
-        }
+        self.hunting.hash_state(&mut animals);
+        self.pregnant.hash_state(&mut animals);
 
         let mut scheduler = StateHasher::new();
         scheduler.write_u64(self.events.sequence());

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sim_host::StateHasher;
 
+use crate::state::StateHash;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EntityId {
     pub index: u32,
@@ -209,6 +211,69 @@ impl<T> SparseStorage<T> {
 
     pub fn iter(&self) -> impl Iterator<Item = (EntityId, &T)> {
         self.dense.iter().map(|(id, value)| (*id, value))
+    }
+
+    pub fn len(&self) -> usize {
+        self.dense.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.dense.is_empty()
+    }
+
+    /// Entries in ascending ID order, independent of insertion and removal history.
+    pub fn sorted(&self) -> Vec<(EntityId, &T)> {
+        let mut entries: Vec<_> = self.iter().collect();
+        entries.sort_unstable_by_key(|&(id, _)| id);
+        entries
+    }
+}
+
+impl<T: StateHash> SparseStorage<T> {
+    /// Writes the entry count, then each ID and value in ascending ID order.
+    pub fn hash_state(&self, hash: &mut StateHasher) {
+        let entries = self.sorted();
+        hash.write_usize(entries.len());
+        for (id, value) in entries {
+            id.state_hash(hash);
+            value.state_hash(hash);
+        }
+    }
+}
+
+impl<T: Clone> SparseStorage<T> {
+    /// Snapshot entries in ascending ID order.
+    pub fn snapshot_entries(&self) -> Vec<(EntityId, T)> {
+        self.sorted()
+            .into_iter()
+            .map(|(id, value)| (id, value.clone()))
+            .collect()
+    }
+}
+
+impl<T> SparseStorage<T> {
+    /// Restores strictly ascending entries whose IDs fit the capacity.
+    pub fn restore(capacity: u32, entries: Vec<(EntityId, T)>) -> Option<Self> {
+        if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return None;
+        }
+        let mut storage = Self::with_capacity(capacity);
+        for (id, value) in entries {
+            if !storage.insert(id, value) {
+                return None;
+            }
+        }
+        Some(storage)
+    }
+}
+
+impl<T: std::fmt::Debug> SparseStorage<T> {
+    /// Writes `prefix:index:generation<TAB>value` lines in ascending ID order.
+    pub fn dump(&self, prefix: &str, out: &mut String) {
+        use std::fmt::Write as _;
+        for (id, value) in self.sorted() {
+            let _ = writeln!(out, "{prefix}:{}:{}\t{value:?}", id.index, id.generation);
+        }
     }
 }
 
@@ -446,10 +511,20 @@ impl SlotPermutation {
 }
 
 /// Declares dense component columns that share the same lifecycle and permutation.
+///
+/// The same declaration generates push, swap-remove and permutation as well as a
+/// serializable row type, `row`/`push_row`, `hash_row` and `dump_row`. Rows, hashes
+/// and dumps visit the columns in declaration order, so the order of the fields is
+/// part of the hash and snapshot format and must be chosen deliberately. The caller
+/// hashes or dumps the stable ID before the row. Row types require `serde` in the
+/// using crate, column types require `Clone`, `Debug` and `StateHash`.
 #[macro_export]
 macro_rules! entity_columns {
-    ($vis:vis struct $name:ident { $($field:ident : $type:ty),+ $(,)? }) => {
+    ($vis:vis struct $name:ident, row $row:ident { $($field:ident : $type:ty),+ $(,)? }) => {
         $vis struct $name { $( $field: Vec<$type>, )+ }
+
+        #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+        $vis struct $row { $( pub $field: $type, )+ }
 
         #[allow(dead_code)] // Groups expose the same operations regardless of which callers need them.
         impl $name {
@@ -461,10 +536,42 @@ macro_rules! entity_columns {
                 $(self.$field.push($field);)+
             }
 
+            $vis fn push_row(&mut self, row: $row) {
+                $(self.$field.push(row.$field);)+
+            }
+
+            $vis fn row(&self, slot: u32) -> Option<$row> {
+                let slot = slot as usize;
+                if slot >= self.len() { return None; }
+                Some($row { $($field: self.$field[slot].clone(),)+ })
+            }
+
             $vis fn swap_remove(&mut self, slot: u32) -> Option<($($type,)+)> {
                 let slot = slot as usize;
                 if slot >= self.len() { return None; }
                 Some(($(self.$field.swap_remove(slot),)+))
+            }
+
+            /// Hashes all columns of a slot in declaration order.
+            $vis fn hash_row(&self, slot: u32, hash: &mut $crate::state::StateHasher) -> bool {
+                let slot = slot as usize;
+                if slot >= self.len() { return false; }
+                $($crate::state::StateHash::state_hash(&self.$field[slot], hash);)+
+                true
+            }
+
+            /// Appends `field=value` pairs separated by spaces, without a line break.
+            $vis fn dump_row(&self, slot: u32, out: &mut String) -> bool {
+                use ::std::fmt::Write as _;
+                let slot = slot as usize;
+                if slot >= self.len() { return false; }
+                let mut separator = "";
+                $(
+                    let _ = write!(out, "{separator}{}={:?}", stringify!($field), self.$field[slot]);
+                    separator = " ";
+                )+
+                let _ = separator;
+                true
             }
 
             $vis fn len(&self) -> usize {

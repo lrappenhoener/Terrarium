@@ -181,7 +181,7 @@ fn command_buffer_ignores_collection_order() {
 fn dense_slots_and_columns_survive_lifecycle_and_permutations() {
     use crate::entity::{EntityTable, SlotPermutation};
     crate::entity_columns! {
-        struct Columns { id_bits: u64, inverse: u64 }
+        struct Columns, row ColumnsRow { id_bits: u64, inverse: u64 }
     }
 
     for seed in [1, 2, 42] {
@@ -274,4 +274,65 @@ fn entity_table_rejects_an_old_generation_after_reuse() {
     assert_ne!(old.generation, new.generation);
     assert_eq!(table.slot(old), None);
     assert_eq!(table.slot(new), Some(0));
+}
+
+#[test]
+fn generated_rows_hash_dump_and_roundtrip_in_declaration_order() {
+    use crate::state::{StateHash, StateHasher};
+    crate::entity_columns! {
+        struct Pair, row PairRow { left: u16, right: Option<EntityId> }
+    }
+    let mut columns = Pair::with_capacity(2);
+    columns.push(7, None);
+    columns.push_row(PairRow {
+        left: 3,
+        right: Some(id(4)),
+    });
+    let mut generated = StateHasher::new();
+    assert!(columns.hash_row(1, &mut generated));
+    assert!(!columns.hash_row(2, &mut generated));
+    let mut manual = StateHasher::new();
+    manual.write_u32(3);
+    manual.write_bool(true);
+    manual.write_u64(id(4).to_u64());
+    assert_eq!(generated.finish(), manual.finish());
+    let mut dump = String::new();
+    assert!(columns.dump_row(0, &mut dump));
+    assert_eq!(dump, "left=7 right=None");
+    let row = columns.row(1).unwrap();
+    assert_eq!((row.left, row.right), (3, Some(id(4))));
+    let mut tuple = StateHasher::new();
+    (3u16, Some(id(4))).state_hash(&mut tuple);
+    assert_eq!(tuple.finish(), manual.finish());
+}
+
+#[test]
+fn sparse_storage_hashes_snapshots_and_dumps_in_id_order() {
+    use crate::state::StateHasher;
+    let mut a = SparseStorage::with_capacity(8);
+    let mut b = SparseStorage::with_capacity(8);
+    for index in [5, 1, 3] {
+        a.insert(id(index), u64::from(index) * 10);
+    }
+    for index in [3, 5, 1, 7] {
+        b.insert(id(index), u64::from(index) * 10);
+    }
+    b.remove(id(7));
+    let hash = |storage: &SparseStorage<u64>| {
+        let mut hash = StateHasher::new();
+        storage.hash_state(&mut hash);
+        hash.finish()
+    };
+    assert_eq!(hash(&a), hash(&b));
+    let entries = a.snapshot_entries();
+    assert_eq!(
+        entries.iter().map(|(id, _)| id.index).collect::<Vec<_>>(),
+        [1, 3, 5]
+    );
+    let restored = SparseStorage::restore(8, entries).unwrap();
+    assert_eq!(hash(&restored), hash(&a));
+    assert!(SparseStorage::restore(8, vec![(id(2), 0u64), (id(1), 0)]).is_none());
+    let mut dump = String::new();
+    restored.dump("timer", &mut dump);
+    assert_eq!(dump, "timer:1:0\t10\ntimer:3:0\t30\ntimer:5:0\t50\n");
 }
