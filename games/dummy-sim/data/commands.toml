@@ -1,0 +1,7 @@
+[[schedule]]
+tick = 500
+commands = [{ SpawnWave = { count = 2000 } }]
+
+[[schedule]]
+tick = 1500
+commands = [{ SetEnergyDrain = { drain = 0.8 } }]

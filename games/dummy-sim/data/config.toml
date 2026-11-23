@@ -1,0 +1,14 @@
+world_width = 1000.0
+world_height = 1000.0
+initial_units = 10000
+max_units = 50000
+resource_nodes = 64
+node_capacity = 1500.0
+node_regen = 180.0
+pickup_radius = 100.0
+pickup_rate = 2.0
+max_energy = 100.0
+initial_energy = 80.0
+energy_drain = 0.55
+max_speed = 2.5
+steering_jitter = 0.35
