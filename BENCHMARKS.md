@@ -116,3 +116,18 @@ Drei alternierende Standardläufe pro Variante. `--worst-ticks 5000` erfasst fü
 Der Median eines Umsortierungsticks liegt jetzt unter p95 der übrigen Ticks. Einzelne Ausreißer bleiben. In den Läufen mit medianem Maximum hatten die langsamsten Ticks (vorher Tick 2.298, nachher 3.602) jeweils keine Umsortierung.
 
 Die alte Sweep-Ausgabe enthielt bereits die Warnung für den Übergang von 1.024² auf 2.048². Ein Regressionstest verwendet exakt 58,89 und 75,82 bei Faktor 1,25.
+
+Die getrennte Nachmessung auf dem Counting-Sort-Stand (je drei alternierende Läufe) bestätigt den Effekt der Kachelzugriffs-Optimierung. Der Standardlauf sank von **71,65 auf 69,13 ns/Tier/Tick**. `environment` sank von **0,151 auf 0,098 ns/Kachel/Tick**, `decide` von **48,25 auf 47,00 ns/Tier/Tick**. `apply` lag mit **4,67 und 4,70 ns/Tier/Tick** praktisch gleich. Dieser Vergleich misst die konkreten Zugriffsänderungen, während der historische Vorher/Nachher-Vergleich oben den ganzen Layoutwechsel misst.
+
+Der Median der Anzahl von Umsortierungsticks oberhalb des gewöhnlichen p95 sank von **78 auf 26** pro 5.000 Ticks. Der typische Umsortierungstick liegt unter p95 der übrigen Ticks. Das p95 innerhalb der Umsortierungsgruppe lag nach dem Umbau noch bei **1.939,08 µs**. Seltene Spitzen sind damit weiterhin sichtbar.
+
+### Standard-Snapshot bei Tick 2.500
+
+Seed 42 und Standardkonfiguration, Release-Build auf `zen`. Drei Save/Load-Paare. Der Ladevorgang folgte jeweils direkt auf das Speichern. Die Zeit umfasst Container-Verarbeitung und Datei-I/O außerhalb der Step-Zeitmessung.
+
+| Operation | Median Bytes | Median ms |
+| --- | ---: | ---: |
+| Speichern | 1.075.429 | 12,10 |
+| Laden und Rekonstruktion | 1.075.429 | 15,63 |
+
+Alle fortgesetzten Läufe erreichten den Referenz-Hash `0x19eb3e87d333006d` bei Tick 5.000. Die genauen Abweichungstests und der geprüfte 50.000-Tick-Lauf sind in [VERIFICATION.md](VERIFICATION.md) dokumentiert.

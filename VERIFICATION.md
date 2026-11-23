@@ -79,3 +79,37 @@ Der Dummy-Release-Lauf bestätigte 50 Checkpoints und den finalen Hash `0x57e366
 - Positionen sind durch die validierte Weltgröße bis 4.096 und Nachbarschaftsschritte von höchstens zwei Kacheln begrenzt. Distanzquadrate und Staffelung verwenden verbreiterte Integer. Chunk- und Slot-Indizes folgen den geprüften Abmessungen und Kapazitäten. Counting-Sort benutzt Präfixsummen der lebenden Slots und streut jede ID genau einmal in ihren Bereich.
 - Die Zweierpotenz-Streifen berechnen den modularen Startversatz mit expliziter Wrapping-Subtraktion und Maske. Beide Varianten wählen dieselben logischen Kacheln.
 - `release-checked` führt den Jungle-Langlauf zusätzlich mit aktiven Überlaufprüfungen aus.
+
+## Etappe 2 · Snapshots, Replays und genaue Abweichungssuche
+
+Formatprüfung, striktes Clippy sowie je 74 Tests in Debug und Release sind grün. `scripts/ci.sh` prüft auch den 5.000-Tick-Lauf mit kombiniertem Determinismus- und Save/Load-Vergleich, den Snapshot-Neustart, das Beispiel-Replay, die Ausreißerliste und den erwarteten Dummy-Fehler. Der geprüfte Langlauf erreicht 50.000 Ticks bei 500 übereinstimmenden Checkpoints mit aktiven Overflow-Checks.
+
+Die Referenzen sind unverändert. Jungle erreicht bei Tick 1.000 `0x5317cfd6e2e12024` und bei Tick 5.000 `0x19eb3e87d333006d`, auch vom Snapshot bei Tick 2.500 aus. Dummy behält seinen Golden Hash `0x20f21cbeee53c309`. Der Neustart erfüllt `--max-step-allocs 0`. Für Jungle wurde kein Verlust des logischen Zustands beobachtet. Die Prüfungen umfassen Umsortierungsgrenzen, aktive Trächtigkeit und Dürre. Die Golden Fixture reproduziert `0xcd31ad5b0c3262ff` bei Tick 500 und `0x22ed95e00104e9ba` nach weiteren 500 Ticks.
+
+### Nachweis der Abweichungssuche
+
+`cargo test -p sim-runner --lib bisect -- --nocapture` meldete in beiden Pflichttests:
+
+```text
+determinism mismatch at tick 437: 0xae3874868a8703cb vs 0x8f3dad7d7f97b9aa; checkpoint interval (400, 500]; differing subsystems: b
+line 2: A b entity=17 value=0 | B b entity=17 value=1
+
+save/load verification at tick 437: exact mismatch 317 ticks after reload at 120 in checkpoint interval (400, 500]; differing subsystems: b
+line 2: A b entity=17 value=0 | B b entity=17 value=1
+```
+
+### Format und Betriebsentscheidungen
+
+- Snapshot und Replay teilen eine Envelope mit Magic, Little-Endian-Version und Headerlänge, JSON-Header und FNV-1a über die Nutzdaten. Die Build-ID kombiniert den Git-Commit mit dem Dirty-Status versionierter Dateien. Speichern ersetzt die Zieldatei nach einem synchronisierten Schreiben über eine temporäre Datei.
+- Jungle verwendet Postcard für die versionierten Nutzdaten und JSON für die vollständige wirksame Config darin. Wasserentfernungen, Belegung, Index, dichte Slots und Puffer werden neu aufgebaut. Die Statusreferenzen verwenden generationale IDs. [Postcard-Wire-Format](https://docs.rs/crate/postcard/1.2.0)
+- Replays bewahren die zusammengeführte TOML-Eingabe bzw. JSON-Eingabe und markieren reine Defaults explizit. JSON bleibt erhalten, damit Typen und Werte wie unsigned 64-Bit-Zahlen oberhalb des TOML-Integerbereichs lesbar bleiben. Command-Gruppen verwenden nach Möglichkeit direkt Postcard und fallen für selbstbeschreibende Serde-Typen auf JSON oder TOML zurück.
+- Der Runner verfeinert festgestellte Abweichungen automatisch. `--bisect` aktiviert zusätzlich die Snapshot-Anker von Lauf A. Reproduziert ein Anker die Abweichung nicht, etwa wegen eines verlorenen versteckten Zustands, beginnt der Vergleich am ursprünglichen Start. Die Dateinamen lauten `tick-<TICK>-a.txt` und `tick-<TICK>-b.txt`. Der Textreport enthält bis zu 20 abweichende Zeilen.
+- Der Worst-Tick-Report hält einen vorreservierten Heap der langsamsten Samples. Er begrenzt den Speicherbedarf auf die angeforderte Anzahl. Ticknummern bezeichnen den Zustand nach dem Step.
+
+### Nächste Prioritäten für den Produktiveinsatz
+
+1. Versionsmigrationen mit archivierten Fixtures pro unterstütztem Release und wiederherstellbaren, versionierten Speicherständen.
+2. Artefaktgrößen begrenzen und Replay-Logs streamen, damit lange Produktionsaufzeichnungen und die Fehlersuche weniger Arbeitsspeicher brauchen.
+3. Dumps nach stabilen Schlüsseln abgleichen und Laufzeitmessungen mit CPU-Isolation und Hardwarezählern ergänzen.
+
+Der Jungle-Standard-Snapshot bei Tick 2.500 misst **1.075.429 Bytes**. Im Median aus drei Läufen dauerte Speichern **12,10 ms** und Laden inklusive Rekonstruktion **15,63 ms**. Historische Zuordnung, Ausreißer und Messmethode stehen in [BENCHMARKS.md](BENCHMARKS.md).
