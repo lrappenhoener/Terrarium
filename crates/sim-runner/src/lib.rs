@@ -75,6 +75,8 @@ pub enum RunnerError {
     ContractViolation(String),
     #[error("unknown game: {0}")]
     UnknownGame(String),
+    #[error("simulation panicked at tick {tick}: {message}")]
+    SimulationPanic { tick: u64, message: String },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -119,6 +121,9 @@ pub struct ArtifactOptions {
     pub dump_state_at: Option<u64>,
     pub bisect: bool,
     pub diff_dir: PathBuf,
+    /// Ticks between replay flushes when no checkpoint is due.
+    pub replay_flush_every: u64,
+    pub replay_max_bytes: Option<u64>,
 }
 
 impl Default for ArtifactOptions {
@@ -135,6 +140,8 @@ impl Default for ArtifactOptions {
             dump_state_at: None,
             bisect: false,
             diff_dir: "divergence".into(),
+            replay_flush_every: 100,
+            replay_max_bytes: None,
         }
     }
 }
@@ -224,7 +231,6 @@ struct CompletedRun {
     worst_ticks: Vec<WorstTick>,
     snapshots: Vec<SnapshotReport>,
     roundtrips: usize,
-    start_header: Option<container::Header>,
     dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
@@ -340,19 +346,29 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         (None, Some(path)) => load_schedule::<S::Command>(path, opts.ticks, &mut diagnostics)?,
         (None, None) => Vec::new(),
     };
-    let mut first = run_once::<S>(
+    let first = run_once::<S>(
         opts,
         &start,
         &schedule,
         Some(&mut diagnostics),
         Pass {
             playback: playback.as_ref(),
+            config: prepared.as_ref(),
             retain_snapshots: opts.artifacts.bisect
                 && (opts.verify_determinism || opts.artifacts.verify_save_load)
                 && S::snapshot_version() != 0,
             ..Pass::default()
         },
-    )?;
+    );
+    let mut first = match (first, &playback) {
+        (Err(RunnerError::SimulationPanic { tick, message }), Some(playback)) => {
+            return Err(RunnerError::SimulationPanic {
+                tick,
+                message: format!("{message} ({})", playback.explain_panic(tick)),
+            });
+        }
+        (result, _) => result?,
+    };
     drop(diagnostics);
     if let Some(playback) = &playback {
         playback.check(&first.checkpoints)?;
@@ -468,20 +484,6 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     } else {
         None
     };
-    if let Some(path) = &opts.artifacts.record_replay {
-        let header = first
-            .start_header
-            .ok_or_else(|| container::invalid("missing replay start header"))?;
-        replay::record::<S>(
-            path,
-            opts,
-            &start,
-            prepared,
-            header,
-            &schedule,
-            &first.checkpoints,
-        )?;
-    }
     let tick = first.tick;
     Ok(RunReport {
         tick,
@@ -497,6 +499,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         verified_checkpoints,
         verified_save_load,
         replay_verified: playback.is_some(),
+        replay_status: playback.as_ref().map(replay::Playback::status),
         average_active_entities,
         ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
         phases,
@@ -516,15 +519,64 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
 struct Pass<'a> {
     roundtrips: &'a [u64],
     playback: Option<&'a replay::Playback>,
+    config: Option<&'a options::ConfigText>,
     retain_snapshots: bool,
 }
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
+}
+
+/// Runs one pass. The diagnostic pass streams a replay if requested and closes it
+/// with the outcome, including panics and runner errors.
 fn run_once<S: Simulation>(
+    opts: &RunOptions,
+    start: &Start<S::Config>,
+    schedule: &[ScheduleEntry<S::Command>],
+    diagnostics: Option<&mut dyn Write>,
+    pass: Pass<'_>,
+) -> Result<CompletedRun, RunnerError> {
+    let mut writer = None;
+    let result = run_pass::<S>(opts, start, schedule, diagnostics, pass, &mut writer);
+    if let Some(writer) = writer {
+        let (tick, ending) = match &result {
+            Ok(run) => (
+                run.tick,
+                replay::Ending::Finished {
+                    tick: run.tick,
+                    hash: run.hash,
+                },
+            ),
+            Err(RunnerError::SimulationPanic { tick, message }) => (
+                *tick,
+                replay::Ending::Panic {
+                    tick: *tick,
+                    message: message.clone(),
+                },
+            ),
+            Err(error) => (
+                0,
+                replay::Ending::Failed {
+                    message: error.to_string(),
+                },
+            ),
+        };
+        writer.finish(tick, ending)?;
+    }
+    result
+}
+
+fn run_pass<S: Simulation>(
     opts: &RunOptions,
     start: &Start<S::Config>,
     schedule: &[ScheduleEntry<S::Command>],
     mut diagnostics: Option<&mut dyn Write>,
     pass: Pass<'_>,
+    replay_writer: &mut Option<replay::ReplayWriter>,
 ) -> Result<CompletedRun, RunnerError> {
     let wall_start = Instant::now();
     let loading = Instant::now();
@@ -532,8 +584,18 @@ fn run_once<S: Simulation>(
     if let Some(playback) = pass.playback {
         playback.check_start(&sim, opts.artifacts.force)?;
     }
-    let start_header = (diagnostics.is_some() && opts.artifacts.record_replay.is_some())
-        .then(|| container::Header::capture(&opts.game, start.seed(opts.seed), &sim));
+    if diagnostics.is_some()
+        && let Some(path) = &opts.artifacts.record_replay
+    {
+        let header = container::Header::capture(&opts.game, start.seed(opts.seed), &sim);
+        *replay_writer = Some(replay::ReplayWriter::create::<S>(
+            path,
+            opts,
+            start,
+            pass.config,
+            header,
+        )?);
+    }
     let mut snapshots = Vec::new();
     if let Start::Snapshot(data, file_time) = start
         && diagnostics.is_some()
@@ -614,12 +676,19 @@ fn run_once<S: Simulation>(
             }
             _ => &[],
         };
+        if let Some(writer) = replay_writer.as_mut() {
+            writer.commands(tick, commands)?;
+        }
         let mut elapsed = 0;
+        let mut panicked = None;
         let probe: &mut dyn PhaseProbe = if profile { &mut recorder } else { &mut noop };
         let mut step = || {
             let start = Instant::now();
-            sim.step_profiled(commands, probe);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                sim.step_profiled(commands, probe);
+            }));
             elapsed = nanoseconds(start.elapsed());
+            panicked = result.err();
         };
         let allocations = if let Some(count) = telemetry.allocation_counter {
             count(&mut step)
@@ -627,6 +696,12 @@ fn run_once<S: Simulation>(
             step();
             0
         };
+        if let Some(payload) = panicked {
+            return Err(RunnerError::SimulationPanic {
+                tick,
+                message: panic_message(payload.as_ref()),
+            });
+        }
         latencies.push(elapsed);
         step_allocations_total += u128::from(allocations);
         step_allocations_max = step_allocations_max.max(allocations);
@@ -677,17 +752,24 @@ fn run_once<S: Simulation>(
             let hash = sim.state_hash();
             let metrics = sim.metrics();
             if checkpoint_due {
-                checkpoints.push(checkpoint(
+                let point = checkpoint(
                     &sim,
                     tick,
                     hash,
                     metrics.active_entities,
                     pass.retain_snapshots,
-                )?);
+                )?;
+                if let Some(writer) = replay_writer.as_mut() {
+                    writer.checkpoint(&point)?;
+                }
+                checkpoints.push(point);
             }
             if let Some(writer) = diagnostics.as_deref_mut().filter(|_| report_due) {
                 write_progress(writer, tick, hash, &metrics)?;
             }
+        }
+        if let Some(writer) = replay_writer.as_mut() {
+            writer.tick_done(tick)?;
         }
     }
 
@@ -695,13 +777,17 @@ fn run_once<S: Simulation>(
     let hash = sim.state_hash();
     let metrics = sim.metrics();
     if checkpoints.last().is_none_or(|last| last.tick != tick) {
-        checkpoints.push(checkpoint(
+        let point = checkpoint(
             &sim,
             tick,
             hash,
             metrics.active_entities,
             pass.retain_snapshots,
-        )?);
+        )?;
+        if let Some(writer) = replay_writer.as_mut() {
+            writer.checkpoint(&point)?;
+        }
+        checkpoints.push(point);
     }
     if let Some(trace) = &mut trace {
         if tick != initial_tick && !due(tick, telemetry.trace_every) {
@@ -720,7 +806,6 @@ fn run_once<S: Simulation>(
         worst_ticks: worst.report(),
         snapshots,
         roundtrips: reloaded,
-        start_header,
         dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,

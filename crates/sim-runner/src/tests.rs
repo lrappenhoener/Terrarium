@@ -490,3 +490,85 @@ fn determinism_bisect_finds_tick_437_and_subsystem_b() {
 fn save_load_bisect_falls_back_from_anchor_and_finds_tick_437() {
     assert_fine_failure::<false>("save-load");
 }
+
+/// Deterministic counter with snapshots and commands that never finishes.
+pub(crate) struct Counter {
+    tick: u64,
+    value: u64,
+}
+
+impl Simulation for Counter {
+    type Config = ();
+    type Command = u32;
+
+    fn new(seed: u64, _: ()) -> Result<Self, SimError> {
+        Ok(Self {
+            tick: 0,
+            value: seed,
+        })
+    }
+    fn step(&mut self, commands: &[u32]) {
+        for &command in commands {
+            self.value = self.value.wrapping_mul(31).wrapping_add(u64::from(command));
+        }
+        self.value = self.value.wrapping_add(self.tick);
+        self.tick += 1;
+    }
+    fn tick(&self) -> u64 {
+        self.tick
+    }
+    fn is_finished(&self) -> bool {
+        false
+    }
+    fn metrics(&self) -> SimMetrics {
+        SimMetrics {
+            active_entities: 1,
+            custom_gauges: vec![],
+        }
+    }
+    fn state_hash(&self) -> u64 {
+        let mut hash = StateHasher::new();
+        hash.write_u64(self.tick);
+        hash.write_u64(self.value);
+        hash.finish()
+    }
+    fn check_invariants(&self) -> Result<(), SimError> {
+        Ok(())
+    }
+}
+
+/// Panics when stepping tick 123.
+pub(crate) struct Panicking(u64);
+
+impl Simulation for Panicking {
+    type Config = ();
+    type Command = u32;
+
+    fn new(_: u64, _: ()) -> Result<Self, SimError> {
+        Ok(Self(0))
+    }
+    fn step(&mut self, _: &[u32]) {
+        if self.0 == 123 {
+            panic!("deliberate panic at tick {}", self.0);
+        }
+        self.0 += 1;
+    }
+    fn tick(&self) -> u64 {
+        self.0
+    }
+    fn is_finished(&self) -> bool {
+        false
+    }
+    fn metrics(&self) -> SimMetrics {
+        SimMetrics {
+            active_entities: 1,
+            custom_gauges: vec![],
+        }
+    }
+    fn state_hash(&self) -> u64 {
+        self.0
+    }
+    fn check_invariants(&self) -> Result<(), SimError> {
+        Ok(())
+    }
+}

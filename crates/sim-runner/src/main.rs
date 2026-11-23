@@ -90,6 +90,14 @@ struct Cli {
     bisect: bool,
     #[arg(long, default_value = "divergence")]
     diff_dir: PathBuf,
+    #[arg(
+        long,
+        default_value_t = 100,
+        help = "Maximum ticks between replay flushes"
+    )]
+    replay_flush_every: u64,
+    #[arg(long, requires = "record_replay", value_name = "N")]
+    replay_max_bytes: Option<u64>,
 }
 
 impl From<Cli> for RunOptions {
@@ -111,6 +119,8 @@ impl From<Cli> for RunOptions {
                 dump_state_at: cli.dump_state_at,
                 bisect: cli.bisect,
                 diff_dir: cli.diff_dir,
+                replay_flush_every: cli.replay_flush_every,
+                replay_max_bytes: cli.replay_max_bytes,
             },
             config: cli.config,
             commands: cli.commands,
@@ -186,6 +196,7 @@ fn exit_code(error: &RunnerError) -> ExitCode {
         RunnerError::SaveLoadMismatch { .. } => ExitCode::from(6),
         RunnerError::LatencyBudget { .. } => ExitCode::from(5),
         RunnerError::AllocationLimit { .. } => ExitCode::from(4),
+        RunnerError::SimulationPanic { .. } => ExitCode::from(7),
         _ => ExitCode::FAILURE,
     }
 }
@@ -234,6 +245,17 @@ mod tests {
                 message: String::new()
             }),
             ExitCode::from(6)
+        );
+    }
+
+    #[test]
+    fn simulation_panics_use_exit_code_seven() {
+        assert_eq!(
+            exit_code(&RunnerError::SimulationPanic {
+                tick: 123,
+                message: String::new()
+            }),
+            ExitCode::from(7)
         );
     }
 

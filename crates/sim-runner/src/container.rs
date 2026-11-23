@@ -81,34 +81,40 @@ fn checksum(bytes: &[u8]) -> u64 {
     hash.finish()
 }
 
-pub(crate) fn encode(
+pub(crate) fn checksum_bytes(bytes: &[u8]) -> u64 {
+    checksum(bytes)
+}
+
+/// Magic, format version, header length and JSON header shared by both file kinds.
+pub(crate) fn encode_prefix(
     magic: [u8; 8],
-    mut header: Header,
-    payload: &[u8],
+    version: u16,
+    header: &Header,
 ) -> Result<Vec<u8>, RunnerError> {
-    header.payload_len = payload.len() as u64;
-    header.payload_checksum = checksum(payload);
-    let metadata = serde_json::to_vec(&header).map_err(|e| invalid(e.to_string()))?;
+    let metadata = serde_json::to_vec(header).map_err(|e| invalid(e.to_string()))?;
     if metadata.len() > MAX_HEADER {
         return Err(invalid("container header too large"));
     }
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&magic);
-    bytes.extend_from_slice(&VERSION.to_le_bytes());
+    bytes.extend_from_slice(&version.to_le_bytes());
     bytes.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&metadata);
-    bytes.extend_from_slice(payload);
     Ok(bytes)
 }
 
-pub(crate) fn decode(magic: [u8; 8], bytes: &[u8]) -> Result<Container, RunnerError> {
+pub(crate) fn decode_prefix(
+    magic: [u8; 8],
+    version: u16,
+    bytes: &[u8],
+) -> Result<(Header, &[u8]), RunnerError> {
     let (prefix, rest) = bytes
         .split_first_chunk::<14>()
         .ok_or_else(|| invalid("truncated container prefix"))?;
     if prefix[..8] != magic {
         return Err(invalid("incorrect container magic"));
     }
-    if u16::from_le_bytes([prefix[8], prefix[9]]) != VERSION {
+    if u16::from_le_bytes([prefix[8], prefix[9]]) != version {
         return Err(invalid("unsupported container version"));
     }
     let header_len = u32::from_le_bytes([prefix[10], prefix[11], prefix[12], prefix[13]]) as usize;
@@ -117,6 +123,23 @@ pub(crate) fn decode(magic: [u8; 8], bytes: &[u8]) -> Result<Container, RunnerEr
         .filter(|_| header_len <= MAX_HEADER)
         .ok_or_else(|| invalid("invalid container header length"))?;
     let header: Header = serde_json::from_slice(header).map_err(|e| invalid(e.to_string()))?;
+    Ok((header, payload))
+}
+
+pub(crate) fn encode(
+    magic: [u8; 8],
+    mut header: Header,
+    payload: &[u8],
+) -> Result<Vec<u8>, RunnerError> {
+    header.payload_len = payload.len() as u64;
+    header.payload_checksum = checksum(payload);
+    let mut bytes = encode_prefix(magic, VERSION, &header)?;
+    bytes.extend_from_slice(payload);
+    Ok(bytes)
+}
+
+pub(crate) fn decode(magic: [u8; 8], bytes: &[u8]) -> Result<Container, RunnerError> {
+    let (header, payload) = decode_prefix(magic, VERSION, bytes)?;
     if header.payload_len != payload.len() as u64 || header.payload_checksum != checksum(payload) {
         return Err(invalid("payload length or checksum mismatch"));
     }
