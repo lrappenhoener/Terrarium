@@ -377,3 +377,12 @@ impl crate::state::StateHash for Point {
         crate::state::StateHash::state_hash(&self.y, hash);
     }
 }
+
+mod grid3;
+mod walk;
+
+pub use grid3::{CHUNK_X, CHUNK_Y, CHUNK_Z, ChunkId, ChunkedGrid3, Pos3, morton3};
+pub use walk::{ORTHOGONAL, Tile, TileKind, TileSource, dig, is_solid, standable, walk_neighbors};
+
+#[cfg(test)]
+mod tests;
