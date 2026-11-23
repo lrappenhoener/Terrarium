@@ -18,6 +18,7 @@ pub struct RunReport {
     pub state_hash: String,
     pub verified_checkpoints: Option<usize>,
     pub verified_save_load: Option<usize>,
+    pub replay_verified: bool,
     pub average_active_entities: f64,
     pub ns_per_active_entity_tick: Option<f64>,
     pub average_scale_units: std::collections::BTreeMap<&'static str, f64>,
@@ -165,6 +166,9 @@ impl Display for RunReport {
         writeln!(f, "state_hash {}", self.state_hash)?;
         if let Some(count) = self.verified_checkpoints {
             writeln!(f, "Determinismus OK ({count} Checkpoints)")?;
+        }
+        if self.replay_verified {
+            writeln!(f, "Replay OK")?;
         }
         if let Some(count) = self.verified_save_load {
             writeln!(f, "Save/Load OK ({count} Roundtrips)")?;

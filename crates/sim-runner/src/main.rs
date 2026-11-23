@@ -14,8 +14,8 @@ use sim_runner::{ArtifactOptions, ReportFormat, RunOptions, RunnerError, Telemet
 #[derive(Parser)]
 #[command(version, about = "Run and verify deterministic headless simulations")]
 struct Cli {
-    #[arg(long, default_value = games::DEFAULT_GAME)]
-    game: String,
+    #[arg(long)]
+    game: Option<String>,
     #[arg(long)]
     list_games: bool,
     #[arg(long, default_value_t = 1_000)]
@@ -78,12 +78,20 @@ struct Cli {
     verify_save_load: bool,
     #[arg(long, requires = "verify_save_load")]
     roundtrip_at: Vec<u64>,
+    #[arg(long, conflicts_with = "sweep")]
+    record_replay: Option<PathBuf>,
+    #[arg(long, conflicts_with_all = ["seed", "ticks", "hash_interval", "config", "overrides", "commands", "load_snapshot", "record_replay", "sweep"])]
+    replay: Option<PathBuf>,
+    #[arg(long, requires = "replay")]
+    force: bool,
+    #[arg(long, requires = "replay")]
+    dump_state_at: Option<u64>,
 }
 
 impl From<Cli> for RunOptions {
     fn from(cli: Cli) -> Self {
         Self {
-            game: cli.game,
+            game: cli.game.unwrap_or_else(|| games::DEFAULT_GAME.into()),
             list_games: cli.list_games,
             ticks: cli.ticks,
             seed: cli.seed.unwrap_or(42),
@@ -93,6 +101,10 @@ impl From<Cli> for RunOptions {
                 load_snapshot: cli.load_snapshot,
                 verify_save_load: cli.verify_save_load,
                 roundtrip_at: cli.roundtrip_at,
+                record_replay: cli.record_replay,
+                replay: cli.replay,
+                force: cli.force,
+                dump_state_at: cli.dump_state_at,
             },
             config: cli.config,
             commands: cli.commands,
@@ -136,6 +148,17 @@ fn main() -> ExitCode {
         }
     };
 
+    if cli.game.is_none()
+        && let Some(path) = &cli.replay
+    {
+        match sim_runner::replay_game(path) {
+            Ok(game) => cli.game = Some(game),
+            Err(error) => {
+                let _ = writeln!(io::stderr().lock(), "Fehler: {error}");
+                return exit_code(&error);
+            }
+        }
+    }
     let sweep = std::mem::take(&mut cli.sweep);
     let warn_factor = cli.sweep_warn_factor;
     match execute(&cli.into(), &sweep, warn_factor) {
@@ -149,7 +172,9 @@ fn main() -> ExitCode {
 
 fn exit_code(error: &RunnerError) -> ExitCode {
     match error {
-        RunnerError::DeterminismMismatch { .. } => ExitCode::from(2),
+        RunnerError::DeterminismMismatch { .. } | RunnerError::ReplayMismatch { .. } => {
+            ExitCode::from(2)
+        }
         RunnerError::InvariantViolation { .. }
         | RunnerError::Sim(SimError::InvariantViolation(_)) => ExitCode::from(3),
         RunnerError::SaveLoadMismatch { .. } => ExitCode::from(6),

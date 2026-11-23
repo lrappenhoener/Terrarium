@@ -4,7 +4,9 @@ mod container;
 mod input;
 mod options;
 mod profile;
+mod replay;
 mod report;
+pub use replay::replay_game;
 mod trace;
 
 use std::{
@@ -51,6 +53,12 @@ pub enum RunnerError {
         first: u64,
         second: u64,
         subsystems: Vec<&'static str>,
+    },
+    #[error("replay mismatch in checkpoint interval ({from}, {to}]; differing subsystems: {}", .subsystems.join(", "))]
+    ReplayMismatch {
+        from: u64,
+        to: u64,
+        subsystems: Vec<String>,
     },
     #[error("save/load verification at tick {tick}: {message}")]
     SaveLoadMismatch { tick: u64, message: String },
@@ -102,6 +110,10 @@ pub struct ArtifactOptions {
     pub load_snapshot: Option<PathBuf>,
     pub verify_save_load: bool,
     pub roundtrip_at: Vec<u64>,
+    pub record_replay: Option<PathBuf>,
+    pub replay: Option<PathBuf>,
+    pub force: bool,
+    pub dump_state_at: Option<u64>,
 }
 
 enum Start<C> {
@@ -188,6 +200,7 @@ struct CompletedRun {
     worst_ticks: Vec<WorstTick>,
     snapshots: Vec<SnapshotReport>,
     roundtrips: usize,
+    start_header: Option<container::Header>,
     dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
@@ -202,6 +215,26 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
             "p99 budget must be finite and nonnegative".into(),
         ));
     }
+    let playback = opts
+        .artifacts
+        .replay
+        .as_deref()
+        .map(replay::Playback::read)
+        .transpose()?;
+    let mut replay_opts;
+    let opts = if let Some(playback) = &playback {
+        if playback.header.game != opts.game {
+            return Err(container::invalid(format!(
+                "replay is for {}, selected game is {}",
+                playback.header.game, opts.game
+            )));
+        }
+        replay_opts = opts.clone();
+        playback.options(&mut replay_opts);
+        &replay_opts
+    } else {
+        opts
+    };
     let telemetry = &opts.telemetry;
     if telemetry.max_step_allocs.is_some() && telemetry.allocation_counter.is_none() {
         return Err(RunnerError::InvalidOptions(
@@ -231,7 +264,11 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         ));
     }
     let mut diagnostics = io::stderr().lock();
-    let start = if let Some(path) = &opts.artifacts.load_snapshot {
+    let mut prepared = None;
+    let start = if let Some(playback) = &playback {
+        playback.header.warn_build(&mut diagnostics)?;
+        playback.start::<S>()?
+    } else if let Some(path) = &opts.artifacts.load_snapshot {
         if opts.config.is_some() || !opts.overrides.is_empty() {
             return Err(RunnerError::InvalidOptions(
                 "a snapshot supplies the configuration".into(),
@@ -242,10 +279,10 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         data.header.warn_build(&mut diagnostics)?;
         Start::Snapshot(data, begin.elapsed())
     } else {
-        Start::New(options::load_config::<S::Config>(
-            opts.config.as_deref(),
-            &opts.overrides,
-        )?)
+        let config = options::prepare_config(opts.config.as_deref(), &opts.overrides)?;
+        let decoded = config.decode()?;
+        prepared = Some(config);
+        Start::New(decoded)
     };
     if start.tick() > opts.ticks {
         return Err(RunnerError::InvalidOptions(format!(
@@ -265,12 +302,25 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         ));
     }
     let roundtrips = roundtrip_ticks(opts, start.tick())?;
-    let schedule = match &opts.commands {
-        Some(path) => load_schedule::<S::Command>(path, opts.ticks, &mut diagnostics)?,
-        None => Vec::new(),
+    let schedule = match (&playback, &opts.commands) {
+        (Some(playback), _) => playback.schedule()?,
+        (None, Some(path)) => load_schedule::<S::Command>(path, opts.ticks, &mut diagnostics)?,
+        (None, None) => Vec::new(),
     };
-    let mut first = run_once::<S>(opts, &start, &schedule, Some(&mut diagnostics), &[])?;
+    let mut first = run_once::<S>(
+        opts,
+        &start,
+        &schedule,
+        Some(&mut diagnostics),
+        Pass {
+            playback: playback.as_ref(),
+            ..Pass::default()
+        },
+    )?;
     drop(diagnostics);
+    if let Some(playback) = &playback {
+        playback.check(&first.checkpoints)?;
+    }
 
     if let Some(path) = &opts.dump_hashes {
         dump_hashes(path, &first.checkpoints)?;
@@ -314,14 +364,23 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     drop(first.latencies);
 
     let verified_checkpoints = if opts.verify_determinism {
-        let second = run_once::<S>(opts, &start, &schedule, None, &[])?;
+        let second = run_once::<S>(opts, &start, &schedule, None, Pass::default())?;
         verify_checkpoints(&first.checkpoints, &second.checkpoints)?;
         Some(first.checkpoints.len())
     } else {
         None
     };
     let verified_save_load = if opts.artifacts.verify_save_load {
-        let second = run_once::<S>(opts, &start, &schedule, None, &roundtrips)?;
+        let second = run_once::<S>(
+            opts,
+            &start,
+            &schedule,
+            None,
+            Pass {
+                roundtrips: &roundtrips,
+                ..Pass::default()
+            },
+        )?;
         if let Err(error) = verify_checkpoints(&first.checkpoints, &second.checkpoints) {
             let RunnerError::DeterminismMismatch { tick, .. } = error else {
                 return Err(error);
@@ -346,6 +405,20 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     } else {
         None
     };
+    if let Some(path) = &opts.artifacts.record_replay {
+        let header = first
+            .start_header
+            .ok_or_else(|| container::invalid("missing replay start header"))?;
+        replay::record::<S>(
+            path,
+            opts,
+            &start,
+            prepared,
+            header,
+            &schedule,
+            &first.checkpoints,
+        )?;
+    }
     let tick = first.tick;
     Ok(RunReport {
         tick,
@@ -360,6 +433,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         state_hash: format!("{:#018x}", first.hash),
         verified_checkpoints,
         verified_save_load,
+        replay_verified: playback.is_some(),
         average_active_entities,
         ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
         phases,
@@ -375,16 +449,27 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     })
 }
 
+#[derive(Default)]
+struct Pass<'a> {
+    roundtrips: &'a [u64],
+    playback: Option<&'a replay::Playback>,
+}
+
 fn run_once<S: Simulation>(
     opts: &RunOptions,
     start: &Start<S::Config>,
     schedule: &[ScheduleEntry<S::Command>],
     mut diagnostics: Option<&mut dyn Write>,
-    roundtrips: &[u64],
+    pass: Pass<'_>,
 ) -> Result<CompletedRun, RunnerError> {
     let wall_start = Instant::now();
     let loading = Instant::now();
     let mut sim = start.instantiate::<S>(opts)?;
+    if let Some(playback) = pass.playback {
+        playback.check_start(&sim, opts.artifacts.force)?;
+    }
+    let start_header = (diagnostics.is_some() && opts.artifacts.record_replay.is_some())
+        .then(|| container::Header::capture(&opts.game, start.seed(opts.seed), &sim));
     let mut snapshots = Vec::new();
     if let Start::Snapshot(data, file_time) = start
         && diagnostics.is_some()
@@ -435,9 +520,12 @@ fn run_once<S: Simulation>(
         trace.observe(&sim)?;
     }
     let mut reloaded = 0;
-    if roundtrips.binary_search(&tick).is_ok() {
+    if pass.roundtrips.binary_search(&tick).is_ok() {
         sim = reload(sim)?;
         reloaded += 1;
+    }
+    if diagnostics.is_some() {
+        dump_state_if_requested(opts, &sim)?;
     }
     let initial_tick = tick;
     let mut recorder = Recorder::new();
@@ -491,13 +579,14 @@ fn run_once<S: Simulation>(
             )));
         }
         tick = next;
-        if roundtrips.binary_search(&tick).is_ok() {
+        if pass.roundtrips.binary_search(&tick).is_ok() {
             sim = reload(sim)?;
             reloaded += 1;
         }
 
         if diagnostics.is_some() {
             save_if_requested(opts, start.seed(opts.seed), &sim, &mut snapshots)?;
+            dump_state_if_requested(opts, &sim)?;
         }
         if let Some(limit) = telemetry.max_step_allocs
             && tick - initial_tick > telemetry.alloc_warmup
@@ -555,6 +644,7 @@ fn run_once<S: Simulation>(
         worst_ticks: worst.report(),
         snapshots,
         roundtrips: reloaded,
+        start_header,
         dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,
@@ -620,6 +710,18 @@ fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
         });
     }
     Ok(loaded)
+}
+
+fn dump_state_if_requested<S: Simulation>(opts: &RunOptions, sim: &S) -> Result<(), RunnerError> {
+    if opts.artifacts.dump_state_at == Some(sim.tick()) {
+        let dir = Path::new("divergence");
+        std::fs::create_dir_all(dir).map_err(|err| io_at(dir, err))?;
+        let path = dir.join(format!("replay-t{}.txt", sim.tick()));
+        let mut dump = String::new();
+        sim.debug_dump(&mut dump)?;
+        container::write(&path, dump.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn save_if_requested<S: Simulation>(

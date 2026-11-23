@@ -334,6 +334,7 @@ dependencies = [
  "clap",
  "dummy-sim",
  "jungle-sim",
+ "postcard",
  "serde",
  "serde_json",
  "sim-host",

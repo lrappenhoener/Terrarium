@@ -8,6 +8,7 @@ use sim_host::{SimError, Simulation, StateHasher};
 use crate::{RunnerError, io_at};
 
 pub(crate) const SNAPSHOT: [u8; 8] = *b"SIMSNAP\0";
+pub(crate) const REPLAY: [u8; 8] = *b"SIMRPLY\0";
 const VERSION: u16 = 1;
 const BUILD_ID: &str = env!("SIM_RUNNER_BUILD_ID");
 const MAX_HEADER: usize = 1024 * 1024;

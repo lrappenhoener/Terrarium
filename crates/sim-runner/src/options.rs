@@ -35,12 +35,44 @@ fn parse_toml(text: &str) -> Result<toml::Value, RunnerError> {
         .ok_or_else(|| invalid("expected TOML value".into()))
 }
 
-pub(crate) fn load_config<T: DeserializeOwned + Default>(
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ConfigText {
+    Default,
+    Toml(String),
+    Json(String),
+}
+
+impl ConfigText {
+    pub fn decode<T: DeserializeOwned + Default>(&self) -> Result<T, RunnerError> {
+        match self {
+            Self::Default => Ok(T::default()),
+            Self::Toml(text) => {
+                toml::from_str(text).map_err(|error| invalid(format!("configuration: {error}")))
+            }
+            Self::Json(text) => serde_json::from_str(text)
+                .map_err(|error| invalid(format!("configuration: {error}"))),
+        }
+    }
+}
+
+pub(crate) fn prepare_config(
     path: Option<&Path>,
     overrides: &[String],
-) -> Result<T, RunnerError> {
+) -> Result<ConfigText, RunnerError> {
     if overrides.is_empty() {
-        return path.map(read_input).unwrap_or_else(|| Ok(T::default()));
+        let Some(path) = path else {
+            return Ok(ConfigText::Default);
+        };
+        let ext = path.extension().and_then(std::ffi::OsStr::to_str);
+        if !matches!(ext, Some("json" | "toml")) {
+            return Err(RunnerError::UnsupportedFormat(path.into()));
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| crate::io_at(path, e))?;
+        return Ok(if ext == Some("json") {
+            ConfigText::Json(text)
+        } else {
+            ConfigText::Toml(text)
+        });
     }
     if path
         .and_then(Path::extension)
@@ -66,7 +98,8 @@ pub(crate) fn load_config<T: DeserializeOwned + Default>(
                 }
             }
         }
-        serde_json::from_value(Value::Object(table))
+        serde_json::to_string(&Value::Object(table))
+            .map(ConfigText::Json)
             .map_err(|error| invalid(format!("configuration: {error}")))
     } else {
         let mut table: toml::Table = path.map(read_input).transpose()?.unwrap_or_default();
@@ -88,8 +121,8 @@ pub(crate) fn load_config<T: DeserializeOwned + Default>(
                 }
             }
         }
-        toml::Value::Table(table)
-            .try_into()
+        toml::to_string(&table)
+            .map(ConfigText::Toml)
             .map_err(|error| invalid(format!("configuration: {error}")))
     }
 }
@@ -108,6 +141,13 @@ pub fn parse_sweep(text: &str) -> Result<(&str, Vec<toml::Value>), RunnerError> 
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    fn load_config<T: DeserializeOwned + Default>(
+        path: Option<&Path>,
+        overrides: &[String],
+    ) -> Result<T, RunnerError> {
+        prepare_config(path, overrides)?.decode()
+    }
 
     #[derive(Debug, Default, Deserialize)]
     #[serde(default, deny_unknown_fields)]

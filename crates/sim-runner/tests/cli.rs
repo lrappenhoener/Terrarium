@@ -246,3 +246,98 @@ fn save_load_combines_with_determinism_and_reports_roundtrips() {
     assert_eq!(report["verified_save_load"], 2);
     assert_eq!(report["verified_checkpoints"], 1);
 }
+
+#[test]
+fn replays_work_with_merged_config_and_embedded_snapshot() {
+    let dir = std::env::temp_dir().join(format!("terrarium-replay-cli-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("config.toml");
+    fs::write(
+        &cfg,
+        "world_size=24\ninitial_herbivores=10\ninitial_predators=2\nmax_animals=100",
+    )
+    .unwrap();
+    let schedule = dir.join("commands.toml");
+    fs::write(
+        &schedule,
+        r#"
+[[schedule]]
+tick = 12
+commands = [{SpawnAnimals = {species = "Herbivore", count = 4}}]
+"#,
+    )
+    .unwrap();
+    let initial = cli()
+        .args([
+            "--game",
+            "jungle",
+            "--ticks",
+            "8",
+            "--save-snapshot-at",
+            "8",
+            "--snapshot-dir",
+        ])
+        .arg(&dir)
+        .arg("--config")
+        .arg(&cfg)
+        .output()
+        .unwrap();
+    assert!(
+        initial.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initial.stderr)
+    );
+    let snapshot = dir.join("jungle-seed42-t8.snap");
+    for embedded in [false, true] {
+        let replay = dir.join(if embedded {
+            "embedded.simr"
+        } else {
+            "config.simr"
+        });
+        let mut record = cli();
+        record
+            .args([
+                "--game",
+                "jungle",
+                "--ticks",
+                "30",
+                "--hash-interval",
+                "5",
+                "--record-replay",
+            ])
+            .arg(&replay)
+            .arg("--commands")
+            .arg(&schedule)
+            .args(["--report-format", "json"]);
+        if embedded {
+            record.arg("--load-snapshot").arg(&snapshot);
+        } else {
+            record
+                .arg("--config")
+                .arg(&cfg)
+                .args(["--set", "think_interval=3"]);
+        }
+        let result = record.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let first: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        let playback = cli()
+            .arg("--replay")
+            .arg(&replay)
+            .args(["--report-format", "json"])
+            .output()
+            .unwrap();
+        assert!(
+            playback.status.success(),
+            "{}",
+            String::from_utf8_lossy(&playback.stderr)
+        );
+        let second: serde_json::Value = serde_json::from_slice(&playback.stdout).unwrap();
+        assert_eq!(second["replay_verified"], true);
+        assert_eq!(second["state_hash"], first["state_hash"]);
+    }
+    fs::remove_dir_all(dir).unwrap();
+}

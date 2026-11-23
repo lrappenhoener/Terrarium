@@ -1,0 +1,11 @@
+[[schedule]]
+tick = 250
+commands = [{ SpawnAnimals = { species = "Herbivore", count = 300 } }]
+
+[[schedule]]
+tick = 1000
+commands = [{ SetPlantGrowth = { per_mille = 60 } }]
+
+[[schedule]]
+tick = 1500
+commands = [{ Drought = { duration_ticks = 220 } }]

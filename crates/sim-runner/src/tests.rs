@@ -6,7 +6,7 @@ use sim_host::StateHasher;
 use super::*;
 
 #[derive(Clone, Deserialize)]
-struct TestConfig {
+pub(crate) struct TestConfig {
     finish_at: u64,
     invalid_at: Option<u64>,
     tick_increment: u64,
@@ -22,7 +22,7 @@ impl Default for TestConfig {
     }
 }
 
-struct TestSim<const UNSTABLE: bool> {
+pub(crate) struct TestSim<const UNSTABLE: bool> {
     config: TestConfig,
     tick: u64,
     value: usize,
@@ -115,13 +115,13 @@ impl<const UNSTABLE: bool> Simulation for TestSim<UNSTABLE> {
     }
 }
 
-type StableSim = TestSim<false>;
+pub(crate) type StableSim = TestSim<false>;
 
 thread_local! {
     static ALLOCATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn options() -> RunOptions {
+pub(crate) fn options() -> RunOptions {
     RunOptions {
         game: "test".into(),
         list_games: false,
@@ -197,7 +197,7 @@ fn reports_invariant_failures_with_the_checked_tick() {
         ..TestConfig::default()
     };
     assert!(matches!(
-        run_once::<StableSim>(&options(), &Start::New(config.clone()), &[], None, &[]),
+        run_once::<StableSim>(&options(), &Start::New(config.clone()), &[], None, Pass::default()),
         Err(RunnerError::InvariantViolation { tick: 2, message }) if message == "deliberate test violation"
     ));
 
@@ -206,7 +206,7 @@ fn reports_invariant_failures_with_the_checked_tick() {
         ..options()
     };
     assert!(matches!(
-        run_once::<StableSim>(&opts, &Start::New(config), &[], None, &[]),
+        run_once::<StableSim>(&opts, &Start::New(config), &[], None, Pass::default()),
         Err(RunnerError::InvariantViolation { tick: 3, .. })
     ));
 }
@@ -245,7 +245,7 @@ fn steps_receive_commands_at_the_current_tick_including_tick_zero() {
         &Start::New(TestConfig::default()),
         &schedule,
         None,
-        &[],
+        Pass::default(),
     )
     .unwrap();
     assert_eq!(run.metrics.active_entities, 123);
@@ -258,7 +258,7 @@ fn rejects_steps_that_advance_more_than_one_tick() {
         ..TestConfig::default()
     };
     assert!(matches!(
-        run_once::<StableSim>(&options(), &Start::New(config), &[], None, &[]),
+        run_once::<StableSim>(&options(), &Start::New(config), &[], None, Pass::default()),
         Err(RunnerError::ContractViolation(message)) if message.contains("from 0 to 1, got 2")
     ));
 }
