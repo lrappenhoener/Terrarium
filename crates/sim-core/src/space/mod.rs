@@ -382,7 +382,10 @@ mod grid3;
 mod walk;
 
 pub use grid3::{CHUNK_X, CHUNK_Y, CHUNK_Z, ChunkId, ChunkedGrid3, Pos3, morton3};
-pub use walk::{ORTHOGONAL, Tile, TileKind, TileSource, dig, is_solid, standable, walk_neighbors};
+pub use walk::{
+    DIAGONAL_COST, ORTHOGONAL, ORTHOGONAL_COST, Tile, TileKind, TileSource, VERTICAL_COST, dig,
+    is_solid, standable, walk_neighbors,
+};
 
 #[cfg(test)]
 mod tests;

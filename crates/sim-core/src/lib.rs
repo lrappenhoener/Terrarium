@@ -9,6 +9,7 @@ pub mod rng;
 pub mod schedule;
 pub mod space;
 pub mod state;
+pub mod topology;
 
 #[cfg(test)]
 mod tests;
