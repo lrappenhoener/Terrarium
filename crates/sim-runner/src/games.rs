@@ -14,6 +14,10 @@ pub const GAMES: &[GameEntry] = &[
         name: "jungle",
         run: run_simulation::<jungle_sim::JungleSim>,
     },
+    GameEntry {
+        name: "fortress",
+        run: run_simulation::<fortress_sim::FortressSim>,
+    },
 ];
 
 pub const DEFAULT_GAME: &str = GAMES[0].name;

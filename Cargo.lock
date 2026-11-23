@@ -144,6 +144,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "fortress-sim"
+version = "0.1.0"
+dependencies = [
+ "allocation-counter",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sim-core",
+ "sim-host",
+ "toml",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -333,6 +346,7 @@ dependencies = [
  "allocation-counter",
  "clap",
  "dummy-sim",
+ "fortress-sim",
  "jungle-sim",
  "postcard",
  "serde",

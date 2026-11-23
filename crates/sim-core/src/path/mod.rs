@@ -226,6 +226,13 @@ impl<K: Copy + Ord, N: Copy + Ord + core::fmt::Debug> PathRequestQueue<K, N> {
         self.pending.is_empty()
     }
 
+    /// Copy of the pending requests in processing order.
+    pub fn snapshot(&self) -> Vec<PathRequest<K, N>> {
+        let mut requests = self.pending.clone();
+        requests.sort_unstable_by_key(|r| (r.submitted, r.key));
+        requests
+    }
+
     /// Pending requests in processing order.
     pub fn sorted(&mut self) -> &[PathRequest<K, N>] {
         self.pending.sort_unstable_by_key(|r| (r.submitted, r.key));

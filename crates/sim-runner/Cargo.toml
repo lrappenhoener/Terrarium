@@ -8,6 +8,7 @@ postcard.workspace = true
 allocation-counter.workspace = true
 clap.workspace = true
 dummy-sim.workspace = true
+fortress-sim.workspace = true
 jungle-sim.workspace = true
 serde.workspace = true
 serde_json.workspace = true

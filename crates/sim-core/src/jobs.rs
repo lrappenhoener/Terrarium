@@ -67,6 +67,7 @@ struct JobIndex {
     offsets: Vec<u32>,
     cursors: Vec<u32>,
     entries: Vec<u32>,
+    marks: Vec<bool>,
 }
 
 impl JobIndex {
@@ -82,6 +83,7 @@ impl JobIndex {
             offsets: vec![0; cells + 1],
             cursors: vec![0; cells],
             entries: Vec::with_capacity(capacity),
+            marks: Vec::with_capacity(capacity),
         }
     }
 
@@ -246,12 +248,17 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
         counts
     }
 
-    /// Rebuilds the spatial index of open jobs. Entries within a cell keep ID order.
-    pub fn rebuild_index(&mut self) {
+    /// Rebuilds the spatial index of open jobs that pass `indexable`, for example
+    /// jobs with an accessible work site. Entries within a cell keep ID order.
+    pub fn rebuild_index(&mut self, mut indexable: impl FnMut(&Job<J, H>) -> bool) {
         let index = &mut self.index;
         index.offsets.fill(0);
+        let mut marks = std::mem::take(&mut index.marks);
+        marks.clear();
         for job in &self.jobs {
-            if job.state == JobState::Open {
+            let include = job.state == JobState::Open && indexable(job);
+            marks.push(include);
+            if include {
                 let cell = index.cell(index.cell_coords(job.pos));
                 index.offsets[cell + 1] += 1;
             }
@@ -264,12 +271,13 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
         index.entries.clear();
         index.entries.resize(index.offsets[cells] as usize, 0);
         for (position, job) in self.jobs.iter().enumerate() {
-            if job.state == JobState::Open {
+            if marks[position] {
                 let cell = index.cell(index.cell_coords(job.pos));
                 index.entries[index.cursors[cell] as usize] = position as u32;
                 index.cursors[cell] += 1;
             }
         }
+        index.marks = marks;
     }
 
     /// The `k` nearest open jobs from the last index rebuild that pass `accept`,
@@ -288,9 +296,40 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
             return;
         }
         let index = &self.index;
-        let (cx, cy, cz) = index.cell_coords(from);
-        let max_ring = index.columns.max(index.rows).max(index.layers);
         let mut inspected = 0;
+        let mut consider = |position: u32, out: &mut Vec<(u32, JobId)>, inspected: &mut usize| {
+            let Some(job) = self.jobs.get(position as usize) else {
+                return;
+            };
+            if job.state != JobState::Open {
+                return;
+            }
+            *inspected += 1;
+            if accept(job) {
+                let entry = (job_distance(from, job.pos), job.id);
+                let at = out.partition_point(|e| *e < entry);
+                if at < k {
+                    if out.len() == k {
+                        out.pop();
+                    }
+                    out.insert(at, entry);
+                }
+            }
+        };
+        // Without a reachable inspection limit both traversals yield the exact result.
+        if index.entries.len() <= inspect {
+            for &position in &index.entries {
+                consider(position, out, &mut inspected);
+            }
+            return;
+        }
+        let (cx, cy, cz) = index.cell_coords(from);
+        let max_ring = cx
+            .max(index.columns - 1 - cx)
+            .max(cy)
+            .max(index.rows - 1 - cy)
+            .max(cz)
+            .max(index.layers - 1 - cz);
         for ring in 0..=max_ring {
             if ring > 0 && out.len() >= k {
                 let lower = job_distance(
@@ -313,10 +352,14 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
                     if !(0..index.rows).contains(&y) {
                         continue;
                     }
-                    for x in cx - ring..=cx + ring {
-                        if !(0..index.columns).contains(&x)
-                            || (x - cx).abs().max((y - cy).abs()).max((z - cz).abs()) != ring
-                        {
+                    let face = (z - cz).abs() == ring || (y - cy).abs() == ring;
+                    let step = if face || ring == 0 {
+                        1
+                    } else {
+                        2 * ring as usize
+                    };
+                    for x in (cx - ring..=cx + ring).step_by(step) {
+                        if !(0..index.columns).contains(&x) {
                             continue;
                         }
                         let cell = index.cell((x, y, z));
@@ -325,23 +368,7 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
                             if inspected >= inspect {
                                 return;
                             }
-                            let Some(job) = self.jobs.get(position as usize) else {
-                                continue;
-                            };
-                            if job.state != JobState::Open {
-                                continue;
-                            }
-                            inspected += 1;
-                            if accept(job) {
-                                let entry = (job_distance(from, job.pos), job.id);
-                                let at = out.partition_point(|e| *e < entry);
-                                if at < k {
-                                    if out.len() == k {
-                                        out.pop();
-                                    }
-                                    out.insert(at, entry);
-                                }
-                            }
+                            consider(position, out, &mut inspected);
                         }
                     }
                 }
@@ -351,6 +378,7 @@ impl<J, H: Copy + Eq> JobBoard<J, H> {
 }
 
 /// Greedy one-to-one matching of workers and nearby jobs.
+#[derive(Default)]
 pub struct Assigner {
     pairs: Vec<(Reverse<i64>, JobId, u32)>,
     candidates: Vec<(u32, JobId)>,
@@ -616,7 +644,7 @@ mod tests {
             );
             board.add((i % 3) as i32, pos, (i % 5) as u8).unwrap();
         }
-        board.rebuild_index();
+        board.rebuild_index(|_| true);
         board
     }
 
@@ -635,6 +663,17 @@ mod tests {
             expected.sort_unstable();
             expected.truncate(8);
             assert_eq!(out, expected);
+        }
+        for (x, y, z) in [(0, 0, 0), (20, 20, 3), (39, 39, 5)] {
+            let from = Pos3::new(x, y, z);
+            board.nearest_open(from, 4, 119, |_| true, &mut out);
+            let mut expected: Vec<_> = board
+                .iter()
+                .map(|job| (job_distance(from, job.pos), job.id))
+                .collect();
+            expected.sort_unstable();
+            expected.truncate(4);
+            assert_eq!(out, expected, "ring traversal from {from:?}");
         }
         board.nearest_open(Pos3::new(0, 0, 0), 8, 3, |_| false, &mut out);
         assert!(out.is_empty());
