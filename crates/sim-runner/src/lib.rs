@@ -52,6 +52,8 @@ pub enum RunnerError {
         second: u64,
         subsystems: Vec<&'static str>,
     },
+    #[error("save/load verification at tick {tick}: {message}")]
+    SaveLoadMismatch { tick: u64, message: String },
     #[error("tick {tick} made {count} allocations (maximum {limit})")]
     AllocationLimit { tick: u64, count: u64, limit: u64 },
     #[error("step p99 {actual:.3} µs exceeds budget {limit:.3} µs")]
@@ -98,6 +100,8 @@ pub struct ArtifactOptions {
     pub save_snapshot_at: Vec<u64>,
     pub snapshot_dir: Option<PathBuf>,
     pub load_snapshot: Option<PathBuf>,
+    pub verify_save_load: bool,
+    pub roundtrip_at: Vec<u64>,
 }
 
 enum Start<C> {
@@ -183,6 +187,7 @@ struct CompletedRun {
     phases: Vec<PhaseSeries>,
     worst_ticks: Vec<WorstTick>,
     snapshots: Vec<SnapshotReport>,
+    roundtrips: usize,
     dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
@@ -214,7 +219,10 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
             "trace and CSV output paths must differ".into(),
         ));
     }
-    if opts.artifacts.load_snapshot.is_some() || !opts.artifacts.save_snapshot_at.is_empty() {
+    if opts.artifacts.verify_save_load
+        || opts.artifacts.load_snapshot.is_some()
+        || !opts.artifacts.save_snapshot_at.is_empty()
+    {
         container::require_snapshots::<S>()?;
     }
     if !opts.artifacts.save_snapshot_at.is_empty() && opts.artifacts.snapshot_dir.is_none() {
@@ -256,11 +264,12 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
             "snapshot save tick is outside the run".into(),
         ));
     }
+    let roundtrips = roundtrip_ticks(opts, start.tick())?;
     let schedule = match &opts.commands {
         Some(path) => load_schedule::<S::Command>(path, opts.ticks, &mut diagnostics)?,
         None => Vec::new(),
     };
-    let mut first = run_once::<S>(opts, &start, &schedule, Some(&mut diagnostics))?;
+    let mut first = run_once::<S>(opts, &start, &schedule, Some(&mut diagnostics), &[])?;
     drop(diagnostics);
 
     if let Some(path) = &opts.dump_hashes {
@@ -305,9 +314,35 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     drop(first.latencies);
 
     let verified_checkpoints = if opts.verify_determinism {
-        let second = run_once::<S>(opts, &start, &schedule, None)?;
+        let second = run_once::<S>(opts, &start, &schedule, None, &[])?;
         verify_checkpoints(&first.checkpoints, &second.checkpoints)?;
         Some(first.checkpoints.len())
+    } else {
+        None
+    };
+    let verified_save_load = if opts.artifacts.verify_save_load {
+        let second = run_once::<S>(opts, &start, &schedule, None, &roundtrips)?;
+        if let Err(error) = verify_checkpoints(&first.checkpoints, &second.checkpoints) {
+            let RunnerError::DeterminismMismatch { tick, .. } = error else {
+                return Err(error);
+            };
+            let last = roundtrips
+                .iter()
+                .rev()
+                .copied()
+                .find(|&point| point <= tick);
+            let message = last.map_or_else(
+                || format!("mismatch before first reload: {error}"),
+                |point| {
+                    format!(
+                        "mismatch {} ticks after reload at {point}: {error}",
+                        tick - point
+                    )
+                },
+            );
+            return Err(RunnerError::SaveLoadMismatch { tick, message });
+        }
+        Some(second.roundtrips)
     } else {
         None
     };
@@ -324,6 +359,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         custom_gauges: first.metrics.custom_gauges,
         state_hash: format!("{:#018x}", first.hash),
         verified_checkpoints,
+        verified_save_load,
         average_active_entities,
         ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
         phases,
@@ -344,6 +380,7 @@ fn run_once<S: Simulation>(
     start: &Start<S::Config>,
     schedule: &[ScheduleEntry<S::Command>],
     mut diagnostics: Option<&mut dyn Write>,
+    roundtrips: &[u64],
 ) -> Result<CompletedRun, RunnerError> {
     let wall_start = Instant::now();
     let loading = Instant::now();
@@ -397,6 +434,11 @@ fn run_once<S: Simulation>(
     if let Some(trace) = &mut trace {
         trace.observe(&sim)?;
     }
+    let mut reloaded = 0;
+    if roundtrips.binary_search(&tick).is_ok() {
+        sim = reload(sim)?;
+        reloaded += 1;
+    }
     let initial_tick = tick;
     let mut recorder = Recorder::new();
     let profile = telemetry.profile_phases && diagnostics.is_some();
@@ -449,6 +491,11 @@ fn run_once<S: Simulation>(
             )));
         }
         tick = next;
+        if roundtrips.binary_search(&tick).is_ok() {
+            sim = reload(sim)?;
+            reloaded += 1;
+        }
+
         if diagnostics.is_some() {
             save_if_requested(opts, start.seed(opts.seed), &sim, &mut snapshots)?;
         }
@@ -507,10 +554,72 @@ fn run_once<S: Simulation>(
         phases,
         worst_ticks: worst.report(),
         snapshots,
+        roundtrips: reloaded,
         dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,
     })
+}
+
+fn roundtrip_ticks(opts: &RunOptions, start: u64) -> Result<Vec<u64>, RunnerError> {
+    let artifacts = &opts.artifacts;
+    if !artifacts.verify_save_load {
+        if !artifacts.roundtrip_at.is_empty() {
+            return Err(RunnerError::InvalidOptions(
+                "--roundtrip-at requires --verify-save-load".into(),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let mut ticks = artifacts.roundtrip_at.clone();
+    if ticks.is_empty() {
+        let elapsed = opts.ticks - start;
+        ticks = vec![
+            start + elapsed / 3,
+            start + (u128::from(elapsed) * 2 / 3) as u64,
+        ];
+    }
+    if ticks
+        .iter()
+        .any(|&tick| !(start..=opts.ticks).contains(&tick))
+    {
+        return Err(RunnerError::InvalidOptions(
+            "roundtrip tick lies outside the run".into(),
+        ));
+    }
+    ticks.sort_unstable();
+    ticks.dedup();
+    Ok(ticks)
+}
+
+fn reload<S: Simulation>(sim: S) -> Result<S, RunnerError> {
+    let tick = sim.tick();
+    let hash = sim.state_hash();
+    let before = sim.subsystem_hashes();
+    let mut bytes = Vec::new();
+    sim.save_snapshot(&mut bytes)
+        .map_err(|err| RunnerError::SaveLoadMismatch {
+            tick,
+            message: format!("could not save: {err}"),
+        })?;
+    drop(sim);
+    let loaded = S::load_snapshot(&bytes).map_err(|err| RunnerError::SaveLoadMismatch {
+        tick,
+        message: format!("could not load: {err}"),
+    })?;
+    let actual = loaded.state_hash();
+    let subsystems = container::differing(before, loaded.subsystem_hashes());
+    if hash != actual || loaded.tick() != tick || !subsystems.is_empty() {
+        return Err(RunnerError::SaveLoadMismatch {
+            tick,
+            message: format!(
+                "hash differs immediately after loading ({hash:#018x} vs {actual:#018x}, loaded tick {}); differing subsystems: {}",
+                loaded.tick(),
+                subsystems.join(", ")
+            ),
+        });
+    }
+    Ok(loaded)
 }
 
 fn save_if_requested<S: Simulation>(

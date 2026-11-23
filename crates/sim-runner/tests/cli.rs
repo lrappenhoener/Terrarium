@@ -209,3 +209,40 @@ fn dummy_rejects_snapshot_flags_cleanly() {
     assert_eq!(result.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&result.stderr).contains("unsupported feature: snapshots"));
 }
+
+#[test]
+fn save_load_combines_with_determinism_and_reports_roundtrips() {
+    let output = cli()
+        .args([
+            "--game",
+            "jungle",
+            "--ticks",
+            "68",
+            "--set",
+            "world_size=16",
+            "--set",
+            "initial_herbivores=10",
+            "--set",
+            "initial_predators=2",
+            "--verify-save-load",
+            "--verify-determinism",
+            "--roundtrip-at",
+            "1",
+            "--roundtrip-at",
+            "64",
+            "--max-step-allocs",
+            "0",
+            "--report-format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["verified_save_load"], 2);
+    assert_eq!(report["verified_checkpoints"], 1);
+}

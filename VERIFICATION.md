@@ -71,6 +71,7 @@ Der Dummy-Release-Lauf bestätigte 50 Checkpoints und den finalen Hash `0x57e366
 - 3 für verletzte Invarianten.
 - 4 für ein überschrittenes Step-Allokationslimit.
 - 5 für ein überschrittenes p99-Budget.
+- 6 für einen abweichenden Zustand nach Save/Load. Dieser Code gilt für eine unmittelbare Abweichung nach dem Laden und für eine spätere Abweichung im fortgesetzten Lauf.
 
 ## Etappe 2 · Arithmetikprüfung
 

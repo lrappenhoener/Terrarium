@@ -74,6 +74,10 @@ struct Cli {
     snapshot_dir: Option<PathBuf>,
     #[arg(long, conflicts_with_all = ["seed", "config", "overrides", "sweep"])]
     load_snapshot: Option<PathBuf>,
+    #[arg(long)]
+    verify_save_load: bool,
+    #[arg(long, requires = "verify_save_load")]
+    roundtrip_at: Vec<u64>,
 }
 
 impl From<Cli> for RunOptions {
@@ -87,6 +91,8 @@ impl From<Cli> for RunOptions {
                 save_snapshot_at: cli.save_snapshot_at,
                 snapshot_dir: cli.snapshot_dir,
                 load_snapshot: cli.load_snapshot,
+                verify_save_load: cli.verify_save_load,
+                roundtrip_at: cli.roundtrip_at,
             },
             config: cli.config,
             commands: cli.commands,
@@ -146,6 +152,7 @@ fn exit_code(error: &RunnerError) -> ExitCode {
         RunnerError::DeterminismMismatch { .. } => ExitCode::from(2),
         RunnerError::InvariantViolation { .. }
         | RunnerError::Sim(SimError::InvariantViolation(_)) => ExitCode::from(3),
+        RunnerError::SaveLoadMismatch { .. } => ExitCode::from(6),
         RunnerError::LatencyBudget { .. } => ExitCode::from(5),
         RunnerError::AllocationLimit { .. } => ExitCode::from(4),
         _ => ExitCode::FAILURE,
@@ -188,6 +195,17 @@ fn execute(opts: &RunOptions, sweep: &[String], warn_factor: f64) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn save_load_mismatch_uses_exit_code_six() {
+        assert_eq!(
+            exit_code(&RunnerError::SaveLoadMismatch {
+                tick: 1,
+                message: String::new()
+            }),
+            ExitCode::from(6)
+        );
+    }
+
     #[test]
     fn allocation_limit_has_its_own_exit_code() {
         assert_eq!(

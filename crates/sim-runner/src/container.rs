@@ -324,6 +324,16 @@ mod tests {
     }
 
     #[test]
+    fn save_load_detects_an_immediate_difference() {
+        let error = crate::reload(Broken(8)).err().unwrap();
+        assert!(matches!(
+            error,
+            RunnerError::SaveLoadMismatch { tick: 8, .. }
+        ));
+        assert!(error.to_string().contains("immediately after loading"));
+    }
+
+    #[test]
     fn lost_state_names_differing_subsystems() {
         let mut header = Header::capture("test", 42, &Broken(7));
         header.state_hash = 8;
