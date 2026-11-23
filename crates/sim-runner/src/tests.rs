@@ -138,6 +138,7 @@ fn options() -> RunOptions {
         overrides: vec![],
         budget_p99_us: None,
         telemetry: TelemetryOptions::default(),
+        artifacts: ArtifactOptions::default(),
     }
 }
 
@@ -196,7 +197,7 @@ fn reports_invariant_failures_with_the_checked_tick() {
         ..TestConfig::default()
     };
     assert!(matches!(
-        run_once::<StableSim>(&options(), config.clone(), &[], None),
+        run_once::<StableSim>(&options(), &Start::New(config.clone()), &[], None),
         Err(RunnerError::InvariantViolation { tick: 2, message }) if message == "deliberate test violation"
     ));
 
@@ -205,7 +206,7 @@ fn reports_invariant_failures_with_the_checked_tick() {
         ..options()
     };
     assert!(matches!(
-        run_once::<StableSim>(&opts, config, &[], None),
+        run_once::<StableSim>(&opts, &Start::New(config), &[], None),
         Err(RunnerError::InvariantViolation { tick: 3, .. })
     ));
 }
@@ -239,7 +240,13 @@ fn steps_receive_commands_at_the_current_tick_including_tick_zero() {
             commands: vec![4],
         },
     ];
-    let run = run_once::<StableSim>(&options(), TestConfig::default(), &schedule, None).unwrap();
+    let run = run_once::<StableSim>(
+        &options(),
+        &Start::New(TestConfig::default()),
+        &schedule,
+        None,
+    )
+    .unwrap();
     assert_eq!(run.metrics.active_entities, 123);
 }
 
@@ -250,7 +257,7 @@ fn rejects_steps_that_advance_more_than_one_tick() {
         ..TestConfig::default()
     };
     assert!(matches!(
-        run_once::<StableSim>(&options(), config, &[], None),
+        run_once::<StableSim>(&options(), &Start::New(config), &[], None),
         Err(RunnerError::ContractViolation(message)) if message.contains("from 0 to 1, got 2")
     ));
 }

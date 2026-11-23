@@ -192,3 +192,20 @@ fn exceeding_p99_budget_exits_with_code_five() {
         .unwrap();
     assert_eq!(result.status.code(), Some(5));
 }
+
+#[test]
+fn dummy_rejects_snapshot_flags_cleanly() {
+    let result = cli()
+        .args([
+            "--game",
+            "dummy",
+            "--save-snapshot-at",
+            "1",
+            "--snapshot-dir",
+            "unused",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unsupported feature: snapshots"));
+}

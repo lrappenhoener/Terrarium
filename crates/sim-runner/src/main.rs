@@ -9,7 +9,7 @@ use std::{
 
 use clap::Parser;
 use sim_host::SimError;
-use sim_runner::{ReportFormat, RunOptions, RunnerError, TelemetryOptions};
+use sim_runner::{ArtifactOptions, ReportFormat, RunOptions, RunnerError, TelemetryOptions};
 
 #[derive(Parser)]
 #[command(version, about = "Run and verify deterministic headless simulations")]
@@ -20,8 +20,8 @@ struct Cli {
     list_games: bool,
     #[arg(long, default_value_t = 1_000)]
     ticks: u64,
-    #[arg(long, default_value_t = 42)]
-    seed: u64,
+    #[arg(long)]
+    seed: Option<u64>,
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
     #[arg(long, value_name = "PATH")]
@@ -68,6 +68,12 @@ struct Cli {
     trace_every: u64,
     #[arg(long)]
     trace_out: Option<PathBuf>,
+    #[arg(long, requires = "snapshot_dir")]
+    save_snapshot_at: Vec<u64>,
+    #[arg(long)]
+    snapshot_dir: Option<PathBuf>,
+    #[arg(long, conflicts_with_all = ["seed", "config", "overrides", "sweep"])]
+    load_snapshot: Option<PathBuf>,
 }
 
 impl From<Cli> for RunOptions {
@@ -76,7 +82,12 @@ impl From<Cli> for RunOptions {
             game: cli.game,
             list_games: cli.list_games,
             ticks: cli.ticks,
-            seed: cli.seed,
+            seed: cli.seed.unwrap_or(42),
+            artifacts: ArtifactOptions {
+                save_snapshot_at: cli.save_snapshot_at,
+                snapshot_dir: cli.snapshot_dir,
+                load_snapshot: cli.load_snapshot,
+            },
             config: cli.config,
             commands: cli.commands,
             verify_determinism: cli.verify_determinism,

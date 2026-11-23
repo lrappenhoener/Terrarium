@@ -22,8 +22,36 @@ pub struct RunReport {
     pub average_scale_units: std::collections::BTreeMap<&'static str, f64>,
     pub phases: Vec<PhaseReport>,
     pub worst_ticks: Vec<WorstTick>,
+    pub snapshots: Vec<SnapshotReport>,
     pub step_allocations_total: Option<u128>,
     pub step_allocations_max: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotReport {
+    pub path: std::path::PathBuf,
+    pub tick: u64,
+    pub operation: &'static str,
+    pub bytes: u64,
+    pub duration_ms: f64,
+}
+
+impl SnapshotReport {
+    pub(crate) fn new(
+        path: &std::path::Path,
+        tick: u64,
+        operation: &'static str,
+        bytes: u64,
+        elapsed: std::time::Duration,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            tick,
+            operation,
+            bytes,
+            duration_ms: elapsed.as_secs_f64() * 1000.0,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +134,17 @@ impl Display for RunReport {
                     .ns_per_unit_tick
                     .map_or_else(|| "n/a".into(), |value| format!("{value:.2}")),
                 phase.dimension,
+            )?;
+        }
+        for snapshot in &self.snapshots {
+            writeln!(
+                f,
+                "Snapshot {} bei Tick {} | {} Bytes | {:.3} ms | {}",
+                snapshot.operation,
+                snapshot.tick,
+                snapshot.bytes,
+                snapshot.duration_ms,
+                snapshot.path.display()
             )?;
         }
         for tick in &self.worst_ticks {
