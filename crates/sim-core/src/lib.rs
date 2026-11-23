@@ -5,6 +5,7 @@
 pub mod behavior;
 pub mod entity;
 pub mod intent;
+pub mod path;
 pub mod rng;
 pub mod schedule;
 pub mod space;
