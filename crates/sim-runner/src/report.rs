@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 use serde::Serialize;
 
-use crate::PhaseReport;
+use crate::{PhaseReport, WorstTick};
 
 #[derive(Debug, Serialize)]
 pub struct RunReport {
@@ -21,6 +21,7 @@ pub struct RunReport {
     pub ns_per_active_entity_tick: Option<f64>,
     pub average_scale_units: std::collections::BTreeMap<&'static str, f64>,
     pub phases: Vec<PhaseReport>,
+    pub worst_ticks: Vec<WorstTick>,
     pub step_allocations_total: Option<u128>,
     pub step_allocations_max: Option<u64>,
 }
@@ -106,6 +107,17 @@ impl Display for RunReport {
                     .map_or_else(|| "n/a".into(), |value| format!("{value:.2}")),
                 phase.dimension,
             )?;
+        }
+        for tick in &self.worst_ticks {
+            write!(
+                f,
+                "Langsamer Tick {} | {:.2} µs",
+                tick.tick, tick.duration_us
+            )?;
+            for (name, us) in &tick.phases_us {
+                write!(f, " | {name} {:.2} µs", us)?;
+            }
+            writeln!(f)?;
         }
         for (name, value) in &self.custom_gauges {
             writeln!(f, "{name} {value:.2}")?;

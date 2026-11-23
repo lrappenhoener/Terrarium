@@ -88,3 +88,31 @@ Die Mehrkosten von **4,78 %** lagen über der 3-%-Grenze. Globales Prüfen bleib
 - Sweep-Listen werden in Flag-Reihenfolge elementweise kombiniert. Warnungen vergleichen benachbarte Stufen. Phasenkosten werden über alle ausgeführten Ticks normalisiert, auch bei seltenen Phasen wie `reorder`. Das p99-Budget vergleicht den ungerundeten Messwert.
 
 Formatprüfung, striktes Clippy, 60 Tests im Standard-Testprofil, 60 Release-Tests sowie die drei abschließenden CLI-Aufrufe waren erfolgreich. Der Jungle-Verifikationslauf bestätigte 50 Checkpoints, null Step-Allokationen und p99 **1.732,01 µs** bei einem Budget von 10.000 µs.
+
+## Etappe 2 · Historische Nachmessung
+
+Die Einzelmessungen der Layout-Zwischenstände oben sind historische Werte aus Etappe 1. Alle Zahlen aus neuen Messungen verwenden mindestens drei Läufe. Für die folgende Zuordnung wurde jeder Commit separat gebaut und fünfmal im Jungle-Standardlauf mit `--profile-phases` gemessen. Die erste Messserie mit gemeinsamem Cargo-Zielverzeichnis wurde verworfen, nachdem identische Binärdateien erkannt wurden.
+
+| Commit | Step ns/Tier/Tick | spatial | decide | resolve | apply | lifecycle | reorder | environment ns/Kachel/Tick |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `962dc12` vor Kachelblöcken | 160,176 | 6,760 | 123,978 | 8,244 | 5,705 | 10,090 | 2,075 | 0,148 |
+| `b21cd49` nach Kachelblöcken | 176,761 | 6,693 | 136,169 | 8,281 | 7,166 | 10,263 | 2,048 | 0,284 |
+| `1cd65c9` vor Invarianten-Umbau | 100,979 | 7,831 | 61,025 | 7,947 | 6,129 | 11,304 | 2,014 | 0,210 |
+| `f5e1a2b` nach Invarianten-Umbau | 91,182 | 7,431 | 60,536 | 7,971 | 5,955 | 3,139 | 2,079 | 0,202 |
+
+Die Spalten zwischen Step und environment sind ebenfalls ns pro Tier und Tick. Die Blockumstellung kostete in der Nachmessung rund **10,4 %**, vor allem in `decide`, `apply` und `environment`. Die Blöcke bleiben erhalten. Grasabsichten verwenden jetzt das logische Tupel (y, x) anstelle von Umrechnungen zum und vom linearen Index. Zweierpotenz-Streifen verwenden eine Maske für den Startversatz. Die Größe der verbleibenden Blocklayout-Kosten ist aus dem kombinierten Nachher-Lauf allein nicht isolierbar.
+
+Schritt 8 spart reproduzierbar **9,7 %** statt der historischen Einzelmessung von rund 32 %. Der größte Effekt liegt in `lifecycle` mit **11,304 → 3,139 ns/Tier/Tick (−72,2 %)**. Der zweite Raumindex-Aufbau entfällt in dieser Phase. Der invariante Neuaufbau liegt außerhalb der Step-Zeit.
+
+### Ausreißer vor und nach Counting-Sort und Kachelzugriffs-Optimierung
+
+Drei alternierende Standardläufe pro Variante. `--worst-ticks 5000` erfasst für die Auswertung alle Ticks. Die Top-10-Spalte zählt Umsortierungen unter den zehn langsamsten Ticks.
+
+| Variante | p50 µs | p95 µs | p99 µs | Max µs | p95 ohne reorder µs | Median-Tick mit reorder µs | reorder in Top 10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Vergleichssortierung | 1.108,44 | 1.451,46 | 3.074,53 | 7.080,75 | 1.416,45 | 2.851,12 | 3 |
+| Counting-Sort | 1.076,26 | 1.371,57 | 2.315,75 | 7.364,01 | 1.349,99 | 1.249,28 | 2 |
+
+Der Median eines Umsortierungsticks liegt jetzt unter p95 der übrigen Ticks. Einzelne Ausreißer bleiben. In den Läufen mit medianem Maximum hatten die langsamsten Ticks (vorher Tick 2.298, nachher 3.602) jeweils keine Umsortierung.
+
+Die alte Sweep-Ausgabe enthielt bereits die Warnung für den Übergang von 1.024² auf 2.048². Ein Regressionstest verwendet exakt 58,89 und 75,82 bei Faktor 1,25.

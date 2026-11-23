@@ -287,6 +287,7 @@ fn zero_ticks_has_only_a_final_hash_and_no_latency_statistics() {
 fn phase_report_contains_both_phases_and_counters_exclude_probe_work() {
     let mut opts = options();
     opts.telemetry.profile_phases = true;
+    opts.telemetry.worst_ticks = 2;
     opts.telemetry.allocation_counter = Some(|step| allocation_counter::measure(step).count_total);
     ALLOCATE.set(true);
     let report = run_simulation::<StableSim>(&opts).unwrap();
@@ -298,6 +299,9 @@ fn phase_report_contains_both_phases_and_counters_exclude_probe_work() {
             .collect::<Vec<_>>(),
         ["advance", "other"]
     );
+    assert_eq!(report.worst_ticks.len(), 2);
+    assert!(report.worst_ticks[0].duration_us >= report.worst_ticks[1].duration_us);
+    assert_eq!(report.worst_ticks[0].phases_us.len(), 2);
     assert_eq!(report.average_scale_units["work"], 12.5);
     assert_eq!(report.phases[0].dimension, "work");
     assert!(report.phases[0].ns_per_unit_tick.is_some());

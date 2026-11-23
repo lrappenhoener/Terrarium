@@ -182,6 +182,13 @@ fn write_output(
 mod tests {
     use super::*;
     #[test]
+    fn measured_jungle_adjacent_increase_warns_at_default_threshold() {
+        let message = warning("step", "1024", "2048", Some(58.89), Some(75.82), 1.25).unwrap();
+        assert!(message.contains("1024 → 2048"));
+        assert!(message.contains("58.89 → 75.82"));
+    }
+
+    #[test]
     fn reports_only_increases_above_the_threshold() {
         assert!(warning("decide", "a", "b", Some(4.0), Some(5.0), 1.25).is_none());
         assert!(

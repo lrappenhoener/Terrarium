@@ -71,3 +71,10 @@ Der Dummy-Release-Lauf bestätigte 50 Checkpoints und den finalen Hash `0x57e366
 - 3 für verletzte Invarianten.
 - 4 für ein überschrittenes Step-Allokationslimit.
 - 5 für ein überschrittenes p99-Budget.
+
+## Etappe 2 · Arithmetikprüfung
+
+- Bedürfnisse und Biomasse bleiben durch Sättigung und Zuteilungsgrenzen innerhalb ihrer Wertebereiche. Alter, Tick und Langlaufzähler sättigen. Generationen und Ereignisfolgen verwenden geprüfte Nachfolger.
+- Positionen sind durch die validierte Weltgröße bis 4.096 und Nachbarschaftsschritte von höchstens zwei Kacheln begrenzt. Distanzquadrate und Staffelung verwenden verbreiterte Integer. Chunk- und Slot-Indizes folgen den geprüften Abmessungen und Kapazitäten. Counting-Sort benutzt Präfixsummen der lebenden Slots und streut jede ID genau einmal in ihren Bereich.
+- Die Zweierpotenz-Streifen berechnen den modularen Startversatz mit expliziter Wrapping-Subtraktion und Maske. Beide Varianten wählen dieselben logischen Kacheln.
+- `release-checked` führt den Jungle-Langlauf zusätzlich mit aktiven Überlaufprüfungen aus.

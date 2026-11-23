@@ -304,6 +304,11 @@ impl<T> ChunkedGrid2<T> {
             .then(|| &self.values[self.physical(point)])
     }
 
+    pub fn get_mut(&mut self, point: Point) -> Option<&mut T> {
+        let index = self.in_bounds(point).then(|| self.physical(point))?;
+        self.values.get_mut(index)
+    }
+
     pub fn set(&mut self, point: Point, value: T) -> bool {
         if !self.in_bounds(point) {
             return false;

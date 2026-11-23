@@ -56,6 +56,8 @@ struct Cli {
     budget_p99_us: Option<f64>,
     #[arg(long)]
     profile_phases: bool,
+    #[arg(long, default_value_t = 0)]
+    worst_ticks: u64,
     #[arg(long)]
     max_step_allocs: Option<u64>,
     #[arg(long, default_value_t = 10)]
@@ -87,6 +89,7 @@ impl From<Cli> for RunOptions {
             budget_p99_us: cli.budget_p99_us,
             telemetry: TelemetryOptions {
                 profile_phases: cli.profile_phases,
+                worst_ticks: cli.worst_ticks,
                 allocation_counter: Some(count_step_allocations),
                 max_step_allocs: cli.max_step_allocs,
                 alloc_warmup: cli.alloc_warmup,

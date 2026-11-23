@@ -135,3 +135,89 @@ impl PhaseSeries {
         }
     }
 }
+
+#[derive(Debug, Serialize)]
+pub struct WorstTick {
+    pub tick: u64,
+    pub duration_us: f64,
+    pub phases_us: Vec<(&'static str, f64)>,
+}
+
+struct TimedTick {
+    key: (u64, std::cmp::Reverse<u64>),
+    spans: [Span; LIMIT],
+    count: usize,
+}
+
+impl PartialEq for TimedTick {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl Eq for TimedTick {}
+impl PartialOrd for TimedTick {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TimedTick {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
+pub(crate) struct WorstTicks {
+    heap: std::collections::BinaryHeap<std::cmp::Reverse<TimedTick>>,
+    limit: usize,
+}
+
+impl WorstTicks {
+    pub fn new(limit: u64) -> Result<Self, RunnerError> {
+        let entries = reserve(limit, "worst tick samples")?;
+        Ok(Self {
+            heap: entries.into(),
+            limit: limit as usize,
+        })
+    }
+
+    pub fn record(&mut self, tick: u64, ns: u64, recorder: &Recorder) {
+        use std::cmp::Reverse;
+        let key = (ns, Reverse(tick));
+        if self.limit == 0 {
+            return;
+        }
+        if self.heap.len() == self.limit {
+            if self
+                .heap
+                .peek()
+                .is_some_and(|existing| existing.0.key >= key)
+            {
+                return;
+            }
+            self.heap.pop();
+        }
+        self.heap.push(Reverse(TimedTick {
+            key,
+            spans: recorder.spans,
+            count: recorder.count,
+        }));
+    }
+
+    pub fn report(self) -> Vec<WorstTick> {
+        self.heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| {
+                let tick = entry.0;
+                WorstTick {
+                    tick: tick.key.1.0,
+                    duration_us: tick.key.0 as f64 / 1000.0,
+                    phases_us: tick.spans[..tick.count]
+                        .iter()
+                        .map(|span| (span.name, span.ns as f64 / 1000.0))
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+}

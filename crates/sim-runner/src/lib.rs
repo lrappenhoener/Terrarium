@@ -19,8 +19,8 @@ use thiserror::Error;
 
 use input::{ScheduleEntry, load_schedule};
 pub use options::parse_sweep;
-pub use profile::PhaseReport;
-use profile::{PhaseSeries, Recorder};
+pub use profile::{PhaseReport, WorstTick};
+use profile::{PhaseSeries, Recorder, WorstTicks};
 pub use report::{LatencyStats, RunReport};
 use trace::Trace;
 
@@ -96,6 +96,7 @@ pub type StepAllocationCounter = fn(&mut dyn FnMut()) -> u64;
 #[derive(Debug, Clone)]
 pub struct TelemetryOptions {
     pub profile_phases: bool,
+    pub worst_ticks: u64,
     pub allocation_counter: Option<StepAllocationCounter>,
     pub max_step_allocs: Option<u64>,
     pub alloc_warmup: u64,
@@ -108,6 +109,7 @@ impl Default for TelemetryOptions {
     fn default() -> Self {
         Self {
             profile_phases: false,
+            worst_ticks: 0,
             allocation_counter: None,
             max_step_allocs: None,
             alloc_warmup: 10,
@@ -135,6 +137,7 @@ struct CompletedRun {
     wall_time: Duration,
     metrics: SimMetrics,
     phases: Vec<PhaseSeries>,
+    worst_ticks: Vec<WorstTick>,
     dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
@@ -239,6 +242,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         average_active_entities,
         ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
         phases,
+        worst_ticks: first.worst_ticks,
         average_scale_units: scale_units,
         step_allocations_total: telemetry
             .allocation_counter
@@ -283,6 +287,13 @@ fn run_once<S: Simulation>(
     let profile = telemetry.profile_phases && diagnostics.is_some();
     let mut noop = NoopProbe;
     let mut phases = Vec::new();
+    let mut worst = WorstTicks::new(if diagnostics.is_some() {
+        telemetry
+            .worst_ticks
+            .min(opts.ticks - initial_tick.min(opts.ticks))
+    } else {
+        0
+    })?;
     let mut step_allocations_total = 0;
     let mut step_allocations_max = 0;
 
@@ -310,6 +321,7 @@ fn run_once<S: Simulation>(
         latencies.push(elapsed);
         step_allocations_total += u128::from(allocations);
         step_allocations_max = step_allocations_max.max(allocations);
+        worst.record(sim.tick(), elapsed, &recorder);
         if profile {
             recorder.flush(&mut phases, opts.ticks)?;
         }
@@ -375,6 +387,7 @@ fn run_once<S: Simulation>(
         wall_time: wall_start.elapsed(),
         metrics,
         phases,
+        worst_ticks: worst.report(),
         dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,

@@ -54,7 +54,7 @@ pub(crate) enum Intent {
     None,
     Move(Point),
     Attack(EntityId, u16),
-    Eat(usize, u16),
+    Eat((i32, i32), u16),
     Drink,
     Gestate,
 }
@@ -249,11 +249,11 @@ pub(crate) fn decide(
                 .filter_map(|p| {
                     let tile = view.world.get(p)?;
                     tile.walkable()
-                        .then(|| (tile.biomass, std::cmp::Reverse(view.world.index(p))))
+                        .then_some((tile.biomass, std::cmp::Reverse((p.y, p.x))))
                 })
                 .max();
             match richest {
-                Some((biomass, std::cmp::Reverse(Some(index)))) if biomass >= 12 => {
+                Some((biomass, std::cmp::Reverse(index))) if biomass >= 12 => {
                     Intent::Eat(index, animal.hunger.min(75))
                 }
                 _ if ready => view.move_to(point, random, |_, tile| i64::from(tile.biomass)),

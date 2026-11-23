@@ -69,7 +69,7 @@ enum Spawn {
 enum Effect {
     Move(EntityId, Point),
     Attack(EntityId, EntityId),
-    Eat(EntityId, usize, u16),
+    Eat(EntityId, Point, u16),
     Drink(EntityId),
     Gestate(EntityId),
 }
@@ -113,6 +113,8 @@ pub struct JungleSim {
     allocator: EntityTable,
     columns: AnimalColumns,
     order: Vec<usize>,
+    chunk_offsets: Vec<usize>,
+    chunk_keys: Vec<usize>,
     permutation: SlotPermutation,
     hunting: SparseStorage<EntityId>,
     pregnant: SparseStorage<u64>,
@@ -121,7 +123,7 @@ pub struct JungleSim {
     decisions: Vec<(EntityId, Decision)>,
     moves: IntentBuffer<Point, ()>,
     attacks: IntentBuffer<EntityId, u16>,
-    grazing: IntentBuffer<usize, u16>,
+    grazing: IntentBuffer<(i32, i32), u16>,
     effects: Vec<Effect>,
     events: EventQueue<Event>,
     commands: EntityCommandBuffer<Spawn>,
@@ -184,12 +186,30 @@ impl JungleSim {
                 self.order.swap(end, below(random, end as u64 + 1) as usize);
             }
         } else {
-            self.order.sort_unstable_by_key(|&slot| {
-                let point = self.columns.position[slot];
+            self.chunk_offsets.fill(0);
+            self.chunk_keys.clear();
+            for point in &self.columns.position {
                 let chunk =
-                    morton_code((point.x / CHUNK_SIZE) as u32, (point.y / CHUNK_SIZE) as u32);
-                (chunk, self.allocator.id(slot as u32))
-            });
+                    morton_code((point.x / CHUNK_SIZE) as u32, (point.y / CHUNK_SIZE) as u32)
+                        as usize;
+                self.chunk_keys.push(chunk);
+                self.chunk_offsets[chunk] += 1;
+            }
+            let mut offset = 0;
+            for count in &mut self.chunk_offsets {
+                let next = offset + *count;
+                *count = offset;
+                offset = next;
+            }
+            // Scatter in ID order to keep ties independent of the old slots.
+            for id in self.allocator.iter_by_id() {
+                if let Some(slot) = self.allocator.slot(id) {
+                    let slot = slot as usize;
+                    let offset = &mut self.chunk_offsets[self.chunk_keys[slot]];
+                    self.order[*offset] = slot;
+                    *offset += 1;
+                }
+            }
         }
         if self.permutation.prepare(&self.order) {
             let mapped = self.allocator.apply_permutation(&self.permutation);
@@ -334,14 +354,13 @@ impl JungleSim {
         self.grazing.resolve(
             |_| (),
             |winner, losers| {
-                let mut available = self
-                    .world
-                    .get_index(winner.0)
-                    .map_or(0, |tile| tile.biomass);
-                for &(tile, id, amount) in std::iter::once(winner).chain(losers) {
+                let (y, x) = winner.0;
+                let point = Point { x, y };
+                let mut available = self.world.get(point).map_or(0, |tile| tile.biomass);
+                for &(_, id, amount) in std::iter::once(winner).chain(losers) {
                     let taken = amount.min(available);
                     available -= taken;
-                    self.effects.push(Effect::Eat(id, tile, taken));
+                    self.effects.push(Effect::Eat(id, point, taken));
                 }
             },
         );
@@ -415,7 +434,7 @@ impl JungleSim {
                     }
                 }
                 Effect::Eat(id, tile, taken) => {
-                    if let Some(tile) = self.world.get_index_mut(tile) {
+                    if let Some(tile) = self.world.get_mut(tile) {
                         tile.biomass -= taken;
                     }
                     if let Some(animal) = self
@@ -455,9 +474,14 @@ impl JungleSim {
         let stripes = self.config.plant_update_stripes;
         let stripe = (self.tick % stripes as u64) as usize;
         let drought = self.drought_until.is_some_and(|end| self.tick < end);
+        let mask = stripes.is_power_of_two().then_some(stripes - 1);
         self.world.for_each_block_row_mut(|first, row| {
             // Each update reads and writes only its own tile.
-            let offset = (stripe + stripes - first % stripes) % stripes;
+            let offset = if let Some(mask) = mask {
+                stripe.wrapping_sub(first) & mask
+            } else {
+                (stripe + stripes - first % stripes) % stripes
+            };
             for tile in row.iter_mut().skip(offset).step_by(stripes) {
                 if tile.walkable() {
                     tile.biomass = if drought {
@@ -566,6 +590,9 @@ impl Simulation for JungleSim {
             .ok_or_else(|| SimError::InvalidConfig("could not reserve occupancy".into()))?;
         let spatial = SpatialIndex::new(size, size, 8, 2, n)
             .ok_or_else(|| SimError::InvalidConfig("could not reserve spatial index".into()))?;
+        let chunk_side = (size as usize)
+            .div_ceil(CHUNK_SIZE as usize)
+            .next_power_of_two();
         let mut sim = Self {
             growth: config.plant_regrowth_per_mille,
             config,
@@ -578,6 +605,8 @@ impl Simulation for JungleSim {
             allocator: EntityTable::with_capacity(cap),
             columns: AnimalColumns::with_capacity(n),
             order: Vec::with_capacity(n),
+            chunk_offsets: vec![0; chunk_side * chunk_side],
+            chunk_keys: Vec::with_capacity(n),
             permutation: SlotPermutation::with_capacity(n),
             hunting: SparseStorage::with_capacity(cap),
             pregnant: SparseStorage::with_capacity(cap),
