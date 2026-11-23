@@ -37,10 +37,10 @@ fn same_seed_produces_same_hash_each_tick() {
 }
 
 #[test]
-fn different_seed_produces_different_hash() {
+fn different_seed_produces_different_unit_positions() {
     let first = DummySim::new(42, small_config()).unwrap();
     let second = DummySim::new(43, small_config()).unwrap();
-    assert_ne!(first.state_hash(), second.state_hash());
+    assert_ne!((&first.x, &first.y), (&second.x, &second.y));
 }
 
 #[test]
