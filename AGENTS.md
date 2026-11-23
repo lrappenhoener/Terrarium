@@ -61,3 +61,8 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 2. `sim_host::Simulation` mit eigenen serialisierbaren Commands und einer deserialisierbaren, klonbaren Config mit Defaults implementieren.
 3. Determinismus, Invarianten und Commands testen. Für einen festen Seed, eine feste Config und eine feste Tickzahl einen Golden-Hash-Test einrichten.
 4. Das Spiel als Dependency von `sim-runner` und in `crates/sim-runner/src/games.rs` als Registry-Eintrag ergänzen.
+
+## Skalierung und Diagnostik
+
+- Diagnosezähler gehören nicht zum Zustandshash und beeinflussen das Simulationsverhalten nicht.
+- Änderungen mit Performance-Bezug aktualisieren `BENCHMARKS.md`. Das Jungle-Standardbudget beträgt p99 ≤ 10.000 µs (`--budget-p99-us 10000`). Änderungen am Budget werden begründet.

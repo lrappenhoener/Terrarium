@@ -101,15 +101,22 @@ impl View<'_> {
     }
 }
 
-pub(crate) fn decide(view: View<'_>, id: EntityId, out: &mut Vec<EntityId>) -> Option<Decision> {
+pub(crate) fn decide(
+    view: View<'_>,
+    id: EntityId,
+    out: &mut Vec<EntityId>,
+    query_counts: &mut [u128; 2],
+) -> Option<Decision> {
     let &animal = view.animals.get(id)?;
     let point = view.position(id)?;
     let tile = view.world.get(point)?;
     let params = view.config.species(animal.species);
     let herbivore = animal.species == Species::Herbivore;
     let random = stateless_u64(view.seed, view.tick, id.to_u64(), 0);
-    view.spatial
-        .query_radius(point, params.perception_radius, out);
+    query_counts[0] += 1;
+    query_counts[1] += view
+        .spatial
+        .query_radius(point, params.perception_radius, out) as u128;
     let mut closest = None;
     let mut closest_friend = None;
     for &other in out.iter().filter(|&&other| other != id) {

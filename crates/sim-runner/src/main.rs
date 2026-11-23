@@ -49,7 +49,11 @@ struct Cli {
     #[arg(long = "set", value_name = "KEY=VALUE")]
     overrides: Vec<String>,
     #[arg(long, value_name = "KEY=V1,V2,...")]
-    sweep: Option<String>,
+    sweep: Vec<String>,
+    #[arg(long, default_value_t = 1.25)]
+    sweep_warn_factor: f64,
+    #[arg(long)]
+    budget_p99_us: Option<f64>,
     #[arg(long)]
     profile_phases: bool,
     #[arg(long)]
@@ -80,6 +84,7 @@ impl From<Cli> for RunOptions {
             dump_hashes: cli.dump_hashes,
             report_format: cli.report_format,
             overrides: cli.overrides,
+            budget_p99_us: cli.budget_p99_us,
             telemetry: TelemetryOptions {
                 profile_phases: cli.profile_phases,
                 allocation_counter: Some(count_step_allocations),
@@ -111,8 +116,9 @@ fn main() -> ExitCode {
         }
     };
 
-    let sweep = cli.sweep.take();
-    match execute(&cli.into(), sweep.as_deref()) {
+    let sweep = std::mem::take(&mut cli.sweep);
+    let warn_factor = cli.sweep_warn_factor;
+    match execute(&cli.into(), &sweep, warn_factor) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let _ = writeln!(io::stderr().lock(), "Fehler: {error}");
@@ -126,12 +132,13 @@ fn exit_code(error: &RunnerError) -> ExitCode {
         RunnerError::DeterminismMismatch { .. } => ExitCode::from(2),
         RunnerError::InvariantViolation { .. }
         | RunnerError::Sim(SimError::InvariantViolation(_)) => ExitCode::from(3),
+        RunnerError::LatencyBudget { .. } => ExitCode::from(5),
         RunnerError::AllocationLimit { .. } => ExitCode::from(4),
         _ => ExitCode::FAILURE,
     }
 }
 
-fn execute(opts: &RunOptions, sweep: Option<&str>) -> Result<(), RunnerError> {
+fn execute(opts: &RunOptions, sweep: &[String], warn_factor: f64) -> Result<(), RunnerError> {
     let output_error = |source| RunnerError::Io {
         context: "stdout".into(),
         source,
@@ -148,8 +155,8 @@ fn execute(opts: &RunOptions, sweep: Option<&str>) -> Result<(), RunnerError> {
         .iter()
         .find(|entry| entry.name == opts.game)
         .ok_or_else(|| RunnerError::UnknownGame(opts.game.clone()))?;
-    if let Some(sweep) = sweep {
-        return sweep::execute(game, opts, sweep);
+    if !sweep.is_empty() {
+        return sweep::execute(game, opts, sweep, warn_factor);
     }
     let report = (game.run)(opts)?;
     let mut output = io::stdout().lock();

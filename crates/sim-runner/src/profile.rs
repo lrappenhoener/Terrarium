@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::BTreeMap, time::Instant};
 
 use serde::Serialize;
 use sim_host::PhaseProbe;
@@ -100,14 +100,29 @@ pub struct PhaseReport {
     pub p99_us: f64,
     pub max_us: f64,
     pub share_percent: f64,
+    pub dimension: &'static str,
+    pub ns_per_unit_tick: Option<f64>,
 }
 
 impl PhaseSeries {
-    pub fn report(mut self, total_ns: f64) -> PhaseReport {
+    pub fn report(
+        mut self,
+        total_ns: f64,
+        ticks: u64,
+        dimensions: &[(&'static str, &'static str)],
+        units: &BTreeMap<&'static str, f64>,
+    ) -> PhaseReport {
         self.ns.sort_unstable();
         let us = |ns: u64| ns as f64 / 1000.0;
         let phase_ns: u128 = self.ns.iter().map(|&value| u128::from(value)).sum();
+        let dimension = dimensions
+            .iter()
+            .find_map(|&(phase, dim)| (phase == self.name).then_some(dim))
+            .unwrap_or("entities");
+        let unit_ticks = units.get(dimension).copied().unwrap_or(0.0) * ticks as f64;
         PhaseReport {
+            dimension,
+            ns_per_unit_tick: (unit_ticks > 0.0).then(|| phase_ns as f64 / unit_ticks),
             name: self.name,
             p50_us: us(nearest_rank(&self.ns, 50).unwrap_or(0)),
             p99_us: us(nearest_rank(&self.ns, 99).unwrap_or(0)),

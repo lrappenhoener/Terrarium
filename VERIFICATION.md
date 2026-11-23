@@ -62,3 +62,12 @@ Der Dummy-Release-Lauf bestätigte 50 Checkpoints und den finalen Hash `0x57e366
 1. Deterministische Wegeplanung mit reservierbaren Wegen und Zielen, damit viele Agenten Engstellen gemeinsam nutzen können.
 2. Ein wiederverwendbarer Job- und Ressourcenplaner für Arbeitsaufträge, Bestände, Transporte und Reservierungen.
 3. Persistenz mit versionierten Checkpoints und Replay sowie ein Datenlayout für größere, hierarchisch organisierte Welten.
+
+## CLI-Exit-Codes
+
+- 0 für einen erfolgreichen Lauf.
+- 1 für Eingabe- und allgemeine Fehler.
+- 2 für Abweichungen beim Determinismusvergleich.
+- 3 für verletzte Invarianten.
+- 4 für ein überschrittenes Step-Allokationslimit.
+- 5 für ein überschrittenes p99-Budget.

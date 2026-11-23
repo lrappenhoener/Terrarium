@@ -110,6 +110,7 @@ pub struct JungleSim {
     population: [usize; 2],
     births: u64,
     deaths: [u64; 4],
+    query_counts: [u128; 2],
 }
 
 impl JungleSim {
@@ -250,6 +251,7 @@ impl JungleSim {
                 },
                 id,
                 &mut self.nearby,
+                &mut self.query_counts,
             ) {
                 self.decisions.push((id, decision));
             }
@@ -521,6 +523,7 @@ impl Simulation for JungleSim {
             population: [0; 2],
             births: 0,
             deaths: [0; 4],
+            query_counts: [0; 2],
         };
         for _ in 0..sim.config.initial_herbivores {
             sim.spawn_external(Species::Herbivore, true);
@@ -561,6 +564,17 @@ impl Simulation for JungleSim {
     fn is_finished(&self) -> bool {
         self.allocator.is_empty()
     }
+    fn phase_dimensions(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("environment", "tiles")]
+    }
+
+    fn scale_units(&self) -> Vec<(&'static str, u64)> {
+        vec![
+            ("entities", self.allocator.len() as u64),
+            ("tiles", self.world.as_slice().len() as u64),
+        ]
+    }
+
     fn metrics(&self) -> SimMetrics {
         self.collect_metrics()
     }

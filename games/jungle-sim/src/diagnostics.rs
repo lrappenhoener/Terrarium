@@ -29,6 +29,14 @@ impl JungleSim {
             ("deaths_thirst", self.deaths[2] as f64),
             ("deaths_age", self.deaths[3] as f64),
             ("total_biomass", biomass as f64),
+            (
+                "radius_candidates_per_query",
+                self.query_counts[1] as f64 / self.query_counts[0].max(1) as f64,
+            ),
+            (
+                "radius_queries_per_tick",
+                self.query_counts[0] as f64 / self.tick.max(1) as f64,
+            ),
             ("avg_hunger", hunger as f64 / active_entities.max(1) as f64),
         ]
         .into_iter()

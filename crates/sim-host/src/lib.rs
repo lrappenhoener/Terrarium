@@ -45,6 +45,16 @@ pub trait Simulation: Sized {
     fn state_hash(&self) -> u64;
     fn check_invariants(&self) -> Result<(), SimError>;
 
+    /// Current sizes of the opaque dimensions used for performance normalization.
+    fn scale_units(&self) -> Vec<(&'static str, u64)> {
+        vec![("entities", self.metrics().active_entities as u64)]
+    }
+
+    /// Dimension per phase. The runner defaults unlisted phases to `entities`.
+    fn phase_dimensions(&self) -> Vec<(&'static str, &'static str)> {
+        Vec::new()
+    }
+
     /// Diagnostic hashes for localizing differences between runs.
     fn subsystem_hashes(&self) -> Vec<(&'static str, u64)> {
         vec![("all", self.state_hash())]

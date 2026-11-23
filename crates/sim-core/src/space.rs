@@ -138,7 +138,7 @@ impl SpatialIndex {
         self.entries.is_empty()
     }
 
-    pub fn query_radius(&self, center: Point, radius: u32, out: &mut Vec<EntityId>) {
+    pub fn query_radius(&self, center: Point, radius: u32, out: &mut Vec<EntityId>) -> usize {
         out.clear();
         let radius = i64::from(radius);
         let min_x = (i64::from(center.x) - radius).max(0);
@@ -146,13 +146,15 @@ impl SpatialIndex {
         let min_y = (i64::from(center.y) - radius).max(0);
         let max_y = (i64::from(center.y) + radius).min(i64::from(self.height - 1));
         if min_x > max_x || min_y > max_y {
-            return;
+            return 0;
         }
         let size = i64::from(self.cell_size);
         let squared = radius as u128 * radius as u128;
+        let mut candidates = 0;
         for row in min_y / size..=max_y / size {
             for col in min_x / size..=max_x / size {
                 let cell = row as usize * self.columns + col as usize;
+                candidates += self.offsets[cell + 1] - self.offsets[cell];
                 for &(id, point) in &self.entries[self.offsets[cell]..self.offsets[cell + 1]] {
                     if center.distance_squared(point) <= squared {
                         out.push(id);
@@ -161,5 +163,6 @@ impl SpatialIndex {
             }
         }
         out.sort_unstable();
+        candidates
     }
 }

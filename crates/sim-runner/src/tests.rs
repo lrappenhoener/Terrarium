@@ -67,6 +67,13 @@ impl<const UNSTABLE: bool> Simulation for TestSim<UNSTABLE> {
         probe.exit("other");
     }
 
+    fn scale_units(&self) -> Vec<(&'static str, u64)> {
+        vec![("work", self.tick * 5), ("entities", 2)]
+    }
+    fn phase_dimensions(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("advance", "work")]
+    }
+
     fn subsystem_hashes(&self) -> Vec<(&'static str, u64)> {
         vec![("a", self.tick), ("b", self.nonce)]
     }
@@ -129,6 +136,7 @@ fn options() -> RunOptions {
         dump_hashes: None,
         report_format: ReportFormat::Text,
         overrides: vec![],
+        budget_p99_us: None,
         telemetry: TelemetryOptions::default(),
     }
 }
@@ -290,6 +298,10 @@ fn phase_report_contains_both_phases_and_counters_exclude_probe_work() {
             .collect::<Vec<_>>(),
         ["advance", "other"]
     );
+    assert_eq!(report.average_scale_units["work"], 12.5);
+    assert_eq!(report.phases[0].dimension, "work");
+    assert!(report.phases[0].ns_per_unit_tick.is_some());
+    assert_eq!(report.phases[1].dimension, "entities");
     assert_eq!(report.step_allocations_total, Some(3));
     assert_eq!(report.step_allocations_max, Some(1));
 

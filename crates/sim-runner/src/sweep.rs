@@ -1,5 +1,4 @@
 use std::{
-    cmp::Ordering,
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -20,41 +19,76 @@ struct Row {
 struct SweepReport<'a> {
     key: &'a str,
     rows: Vec<Row>,
-    scaling_warning: Option<String>,
+    keys: Vec<&'a str>,
+    scaling_warnings: Vec<String>,
 }
 
-pub fn execute(game: &GameEntry, opts: &RunOptions, text: &str) -> Result<(), RunnerError> {
-    let (key, values) = parse_sweep(text)?;
-    let mut rows = Vec::with_capacity(values.len());
-    for (i, value) in values.iter().enumerate() {
+pub fn execute(
+    game: &GameEntry,
+    opts: &RunOptions,
+    texts: &[String],
+    factor: f64,
+) -> Result<(), RunnerError> {
+    if !factor.is_finite() || factor < 1.0 {
+        return Err(RunnerError::InvalidOptions(
+            "sweep warning factor must be finite and at least 1".into(),
+        ));
+    }
+    let columns = texts
+        .iter()
+        .map(|text| parse_sweep(text))
+        .collect::<Result<Vec<_>, _>>()?;
+    let count = columns.first().map_or(0, |(_, values)| values.len());
+    if columns.iter().any(|(_, values)| values.len() != count) {
+        return Err(RunnerError::InvalidOptions(
+            "sweep lists must have equal lengths".into(),
+        ));
+    }
+    let mut rows = Vec::with_capacity(count);
+    for i in 0..count {
         let mut run = opts.clone();
-        run.overrides.push(format!("{key}={value}"));
+        let values = columns
+            .iter()
+            .map(|(key, values)| {
+                run.overrides.push(format!("{key}={}", values[i]));
+                values[i].to_string()
+            })
+            .collect::<Vec<_>>();
         run.dump_hashes = output_path(run.dump_hashes.as_deref(), i + 1);
         run.telemetry.trace_out = output_path(run.telemetry.trace_out.as_deref(), i + 1);
         rows.push(Row {
-            value: value.to_string(),
+            value: values.join(", "),
             report: (game.run)(&run)?,
         });
     }
-
-    let compare = |a: &usize, b: &usize| compare_values(&values[*a], &values[*b]);
-    let min = (0..values.len()).min_by(compare).unwrap_or(0);
-    let max = (0..values.len()).max_by(compare).unwrap_or(0);
-    let scaling_warning = rows[min]
-        .report
-        .ns_per_active_entity_tick
-        .zip(rows[max].report.ns_per_active_entity_tick)
-        .filter(|(small, large)| small * 2.0 < *large)
-        .map(|(small, large)| {
-            format!(
-                "ns pro aktiver Entität und Tick steigen von {:.2} auf {:.2} zwischen {} und {}",
-                small, large, rows[min].value, rows[max].value
-            )
-        });
+    let mut scaling_warnings = Vec::new();
+    for pair in rows.windows(2) {
+        let [a, b] = pair else { continue };
+        for (phase, first, next) in std::iter::once((
+            "step",
+            a.report.ns_per_active_entity_tick,
+            b.report.ns_per_active_entity_tick,
+        ))
+        .chain(a.report.phases.iter().filter_map(|phase| {
+            let other = b
+                .report
+                .phases
+                .iter()
+                .find(|p| p.name == phase.name && p.dimension == phase.dimension)?;
+            Some((phase.name, phase.ns_per_unit_tick, other.ns_per_unit_tick))
+        })) {
+            if let Some(message) = warning(phase, &a.value, &b.value, first, next, factor) {
+                scaling_warnings.push(message);
+            }
+        }
+    }
+    let keys: Vec<_> = columns.iter().map(|(name, _)| *name).collect();
+    let title = keys.join(", ");
     let report = SweepReport {
-        key,
+        key: &title,
+        keys,
         rows,
-        scaling_warning,
+        scaling_warnings,
     };
     write_output(&mut io::stdout().lock(), opts.report_format, &report).map_err(|source| {
         RunnerError::Io {
@@ -64,14 +98,17 @@ pub fn execute(game: &GameEntry, opts: &RunOptions, text: &str) -> Result<(), Ru
     })
 }
 
-fn compare_values(a: &toml::Value, b: &toml::Value) -> Ordering {
-    match (a, b) {
-        (toml::Value::Integer(a), toml::Value::Integer(b)) => a.cmp(b),
-        (toml::Value::Float(a), toml::Value::Float(b)) => a.total_cmp(b),
-        (toml::Value::Float(a), toml::Value::Integer(b)) => a.total_cmp(&(*b as f64)),
-        (toml::Value::Integer(a), toml::Value::Float(b)) => (*a as f64).total_cmp(b),
-        _ => a.to_string().cmp(&b.to_string()),
-    }
+fn warning(
+    phase: &str,
+    a: &str,
+    b: &str,
+    first: Option<f64>,
+    next: Option<f64>,
+    factor: f64,
+) -> Option<String> {
+    let (first, next) = first.zip(next)?;
+    (next > first * factor)
+        .then(|| format!("{phase} ({a} → {b}): {first:.2} → {next:.2} ns/Einheit/Tick"))
 }
 
 fn output_path(path: Option<&Path>, index: usize) -> Option<PathBuf> {
@@ -115,7 +152,7 @@ fn write_output(
                     metric(report.ns_per_active_entity_tick)
                 )?;
             }
-            if let Some(warning) = &sweep.scaling_warning {
+            for warning in &sweep.scaling_warnings {
                 writeln!(out, "Hinweis: {warning}")?;
             }
             for row in &sweep.rows {
@@ -124,12 +161,14 @@ fn write_output(
                     for phase in &row.report.phases {
                         writeln!(
                             out,
-                            "  {} | p50 {:.2} µs | p99 {:.2} µs | Max {:.2} µs | {:.2} %",
+                            "  {} | p50 {:.2} µs | p99 {:.2} µs | Max {:.2} µs | {:.2} % | {} ns/{}/Tick",
                             phase.name,
                             phase.p50_us,
                             phase.p99_us,
                             phase.max_us,
-                            phase.share_percent
+                            phase.share_percent,
+                            metric(phase.ns_per_unit_tick),
+                            phase.dimension,
                         )?;
                     }
                 }
@@ -137,4 +176,18 @@ fn write_output(
         }
     }
     out.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reports_only_increases_above_the_threshold() {
+        assert!(warning("decide", "a", "b", Some(4.0), Some(5.0), 1.25).is_none());
+        assert!(
+            warning("decide", "b", "c", Some(5.0), Some(7.0), 1.25)
+                .unwrap()
+                .contains("decide (b → c)")
+        );
+    }
 }

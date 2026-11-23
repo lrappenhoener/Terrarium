@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added default scaling dimension hooks so phase costs can be normalized by measured workload without runner knowledge of the simulation.
+
 - Added default subsystem hashes to localize divergence while retaining existing simulation implementations.
 - Added optional phase telemetry and an inert probe so runners can measure the same step implementation with and without phase sampling.
 - Added default opaque-ID descriptions for traces without runner knowledge of game types.

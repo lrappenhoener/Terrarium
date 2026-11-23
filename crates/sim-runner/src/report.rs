@@ -19,6 +19,7 @@ pub struct RunReport {
     pub verified_checkpoints: Option<usize>,
     pub average_active_entities: f64,
     pub ns_per_active_entity_tick: Option<f64>,
+    pub average_scale_units: std::collections::BTreeMap<&'static str, f64>,
     pub phases: Vec<PhaseReport>,
     pub step_allocations_total: Option<u128>,
     pub step_allocations_max: Option<u64>,
@@ -94,8 +95,16 @@ impl Display for RunReport {
         for phase in &self.phases {
             writeln!(
                 f,
-                "Phase {} (µs) | p50 {:.2} | p99 {:.2} | Max {:.2} | Anteil {:.2} %",
-                phase.name, phase.p50_us, phase.p99_us, phase.max_us, phase.share_percent
+                "Phase {} (µs) | p50 {:.2} | p99 {:.2} | Max {:.2} | Anteil {:.2} % | {} ns/{}/Tick",
+                phase.name,
+                phase.p50_us,
+                phase.p99_us,
+                phase.max_us,
+                phase.share_percent,
+                phase
+                    .ns_per_unit_tick
+                    .map_or_else(|| "n/a".into(), |value| format!("{value:.2}")),
+                phase.dimension,
             )?;
         }
         for (name, value) in &self.custom_gauges {

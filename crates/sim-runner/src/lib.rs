@@ -53,6 +53,8 @@ pub enum RunnerError {
     },
     #[error("tick {tick} made {count} allocations (maximum {limit})")]
     AllocationLimit { tick: u64, count: u64, limit: u64 },
+    #[error("step p99 {actual:.3} µs exceeds budget {limit:.3} µs")]
+    LatencyBudget { actual: f64, limit: f64 },
     #[error("invalid options: {0}")]
     InvalidOptions(String),
     #[error("simulation contract violation: {0}")]
@@ -85,6 +87,7 @@ pub struct RunOptions {
     pub dump_hashes: Option<PathBuf>,
     pub report_format: ReportFormat,
     pub overrides: Vec<String>,
+    pub budget_p99_us: Option<f64>,
     pub telemetry: TelemetryOptions,
 }
 
@@ -120,6 +123,7 @@ struct Checkpoint {
     tick: u64,
     hash: u64,
     active: usize,
+    units: Vec<(&'static str, u64)>,
     subsystems: Vec<(&'static str, u64)>,
 }
 
@@ -131,11 +135,20 @@ struct CompletedRun {
     wall_time: Duration,
     metrics: SimMetrics,
     phases: Vec<PhaseSeries>,
+    dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
 }
 
 pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, RunnerError> {
+    if opts
+        .budget_p99_us
+        .is_some_and(|limit| !limit.is_finite() || limit < 0.0)
+    {
+        return Err(RunnerError::InvalidOptions(
+            "p99 budget must be finite and nonnegative".into(),
+        ));
+    }
     let telemetry = &opts.telemetry;
     if telemetry.max_step_allocs.is_some() && telemetry.allocation_counter.is_none() {
         return Err(RunnerError::InvalidOptions(
@@ -179,12 +192,28 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         .sum::<f64>()
         / first.checkpoints.len() as f64;
     let entity_ticks = average_active_entities * ticks_executed as f64;
+    let mut scale_units = std::collections::BTreeMap::new();
+    for checkpoint in &first.checkpoints {
+        for &(name, units) in &checkpoint.units {
+            *scale_units.entry(name).or_insert(0.0) += units as f64;
+        }
+    }
+    for units in scale_units.values_mut() {
+        *units /= first.checkpoints.len() as f64;
+    }
     let phases = first
         .phases
         .into_iter()
-        .map(|series| series.report(total_ns))
+        .map(|series| series.report(total_ns, ticks_executed, &first.dimensions, &scale_units))
         .collect();
     let latency_us = LatencyStats::from_samples(&mut first.latencies);
+    if let Some(limit) = opts.budget_p99_us
+        && let Some(actual) =
+            report::nearest_rank(&first.latencies, 99).map(|ns| ns as f64 / 1000.0)
+        && actual > limit
+    {
+        return Err(RunnerError::LatencyBudget { actual, limit });
+    }
     drop(first.latencies);
 
     let verified_checkpoints = if opts.verify_determinism {
@@ -210,6 +239,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         average_active_entities,
         ns_per_active_entity_tick: (entity_ticks > 0.0).then(|| total_ns / entity_ticks),
         phases,
+        average_scale_units: scale_units,
         step_allocations_total: telemetry
             .allocation_counter
             .map(|_| first.step_allocations_total),
@@ -345,6 +375,7 @@ fn run_once<S: Simulation>(
         wall_time: wall_start.elapsed(),
         metrics,
         phases,
+        dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,
     })
@@ -357,6 +388,7 @@ fn checkpoint<S: Simulation>(sim: &S, tick: u64, hash: u64, active: usize) -> Ch
         tick,
         hash,
         active,
+        units: sim.scale_units(),
         subsystems,
     }
 }

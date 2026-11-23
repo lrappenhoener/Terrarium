@@ -147,3 +147,48 @@ fn jungle_sweep_exports_each_run_and_uses_nested_overrides() {
     assert_eq!(typo.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&typo.stderr).contains("typo"));
 }
+
+#[test]
+fn sweep_zips_columns_and_rejects_unequal_lengths() {
+    let run = |populations| {
+        cli()
+            .args([
+                "--ticks",
+                "1",
+                "--sweep",
+                "world_width=10,20",
+                "--sweep",
+                populations,
+                "--report-format",
+                "json",
+            ])
+            .output()
+            .unwrap()
+    };
+    let output = run("initial_units=3,5");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["keys"],
+        serde_json::json!(["world_width", "initial_units"])
+    );
+    assert_eq!(report["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(report["rows"][0]["active_entities"], 3);
+    assert_eq!(report["rows"][1]["active_entities"], 5);
+    let invalid = run("initial_units=3");
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("equal lengths"));
+}
+
+#[test]
+fn exceeding_p99_budget_exits_with_code_five() {
+    let result = cli()
+        .args(["--ticks", "2", "--budget-p99-us", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(5));
+}
