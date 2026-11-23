@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sim-core", "crates/sim-host", "crates/sim-runner", "games/dummy-sim"]
+members = ["crates/sim-core", "crates/sim-host", "crates/sim-runner", "games/dummy-sim", "games/jungle-sim"]
 resolver = "3"
 
 [workspace.package]
@@ -16,6 +16,7 @@ toml = "1.2.2"
 sim-host = { path = "crates/sim-host" }
 sim-core = { path = "crates/sim-core" }
 dummy-sim = { path = "games/dummy-sim" }
+jungle-sim = { path = "games/jungle-sim" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -27,3 +28,6 @@ expect_used = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[profile.test]
+opt-level = 2
