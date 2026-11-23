@@ -32,3 +32,16 @@ Jungle mit Seed 42 und Standardkonfiguration, Hashformat `jungle-logical-v1`. Du
 | 3.000 | `0xf3dab8f7d47ddfe7` |
 | 4.000 | `0xb351dbf937784ff1` |
 | 5.000 | `0x19eb3e87d333006d` |
+
+## Schritt 4 · Dichte Slots
+
+| Schritt | Code-Commit | Läufe | TPS | p50 µs | p99 µs | ns/Tier/Tick | Hash bei Tick 5.000 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 4 · Dichte Slots | `0e85e25` | 1 | 559.675 | 1808.480 | 2590.330 | 143.084 | 0x19eb3e87d333006d |
+
+| Schritt | Seitenlänge | Ø Tiere | Step ns/Tier/Tick | Decide ns/Tier/Tick | Environment ns/Kachel/Tick | Kandidaten/Abfrage | Abfragen/Tick |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 · Dichte Slots | 256 | 3209.750 | 108.084 | 81.634 | 0.074 | 21.396 | 799.628 |
+| 4 · Dichte Slots | 512 | 12686.000 | 126.574 | 97.635 | 0.120 | 21.586 | 3163.664 |
+| 4 · Dichte Slots | 1024 | 50670.150 | 181.703 | 139.644 | 0.281 | 22.196 | 12625.815 |
+| 4 · Dichte Slots | 2048 | 195779.000 | 283.993 | 225.361 | 0.310 | 19.854 | 48734.404 |

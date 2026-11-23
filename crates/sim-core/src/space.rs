@@ -181,3 +181,18 @@ impl SpatialIndex {
         candidates
     }
 }
+
+pub const CHUNK_SIZE: i32 = 32;
+
+/// Interleaves two nonnegative coordinates in Morton order.
+pub fn morton_code(x: u32, y: u32) -> u64 {
+    fn spread(x: u32) -> u64 {
+        let mut x = u64::from(x);
+        x = (x | (x << 16)) & 0x0000ffff0000ffff;
+        x = (x | (x << 8)) & 0x00ff00ff00ff00ff;
+        x = (x | (x << 4)) & 0x0f0f0f0f0f0f0f0f;
+        x = (x | (x << 2)) & 0x3333333333333333;
+        (x | (x << 1)) & 0x5555555555555555
+    }
+    spread(x) | (spread(y) << 1)
+}

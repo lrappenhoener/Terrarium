@@ -12,11 +12,13 @@ use std::cmp::Reverse;
 pub use config::{JungleConfig, Species, SpeciesConfig};
 use serde::{Deserialize, Serialize};
 use sim_core::{
-    entity::{EntityCommand, EntityCommandBuffer, EntityId, EntityTable, SparseStorage},
+    entity::{
+        EntityCommand, EntityCommandBuffer, EntityId, EntityTable, SlotPermutation, SparseStorage,
+    },
     intent::IntentBuffer,
     rng::{SystemRng, below, stateless_u64},
     schedule::EventQueue,
-    space::{Grid2, Point, SpatialHit, SpatialIndex},
+    space::{CHUNK_SIZE, Grid2, Point, SpatialHit, SpatialIndex, morton_code},
 };
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
@@ -93,6 +95,8 @@ pub struct JungleSim {
     occupied: Grid2<Option<EntityId>>,
     allocator: EntityTable,
     columns: AnimalColumns,
+    order: Vec<usize>,
+    permutation: SlotPermutation,
     hunting: SparseStorage<EntityId>,
     pregnant: SparseStorage<u64>,
     spatial: SpatialIndex,
@@ -150,6 +154,29 @@ impl JungleSim {
                     }
                 }
             }
+        }
+    }
+
+    fn reorder(&mut self) {
+        self.order.clear();
+        self.order.extend(0..self.allocator.len());
+        if self.config.debug_shuffle_slots {
+            for end in (1..self.order.len()).rev() {
+                let random = stateless_u64(self.seed, self.tick, end as u64, 0x534c4f54);
+                self.order.swap(end, below(random, end as u64 + 1) as usize);
+            }
+        } else {
+            self.order.sort_unstable_by_key(|&slot| {
+                let point = self.columns.position[slot];
+                let chunk =
+                    morton_code((point.x / CHUNK_SIZE) as u32, (point.y / CHUNK_SIZE) as u32);
+                (chunk, self.allocator.id(slot as u32))
+            });
+        }
+        if self.permutation.prepare(&self.order) {
+            let mapped = self.allocator.apply_permutation(&self.permutation);
+            let moved = self.columns.apply_permutation(&self.permutation);
+            debug_assert!(mapped && moved);
         }
     }
 
@@ -539,6 +566,8 @@ impl Simulation for JungleSim {
             spatial,
             allocator: EntityTable::with_capacity(cap),
             columns: AnimalColumns::with_capacity(n),
+            order: Vec::with_capacity(n),
+            permutation: SlotPermutation::with_capacity(n),
             hunting: SparseStorage::with_capacity(cap),
             pregnant: SparseStorage::with_capacity(cap),
             locations: Vec::with_capacity(n),
@@ -578,6 +607,13 @@ impl Simulation for JungleSim {
             probe.exit(name);
         }
         phase(probe, "commands", || self.commands(commands));
+        if self.config.debug_shuffle_slots
+            || (self.config.reorder_interval != 0
+                && self.tick != 0
+                && self.tick.is_multiple_of(self.config.reorder_interval))
+        {
+            phase(probe, "reorder", || self.reorder());
+        }
         phase(probe, "spatial", || self.rebuild_spatial());
         phase(probe, "decide", || self.decide());
         phase(probe, "resolve", || self.resolve());

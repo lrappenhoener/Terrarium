@@ -68,3 +68,4 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Änderungen mit Performance-Bezug aktualisieren `BENCHMARKS.md`. Das Jungle-Standardbudget beträgt p99 ≤ 10.000 µs (`--budget-p99-us 10000`). Änderungen am Budget werden begründet.
 - Zustandshashes folgen der logischen Kachel- und Entitäts-ID-Reihenfolge, unabhängig vom Speicherlayout. Verhaltensneutrale Refactorings reproduzieren die Referenz-Hashes aus `BENCHMARKS.md` exakt.
 - Verhaltenslogik verwendet ausschließlich stabile `EntityId`-Werte. Dichte Slots dienen nur dem Speicherzugriff und können sich jederzeit ändern.
+- Jedes Spiel mit umsortierbaren Slots testet bei deterministisch zufälliger Slot-Permutation pro Tick dieselbe logische Hash-Folge. Neue Spiele richten diesen Shuffle-Test ein. Das bestehende Dummy-Spiel behält sein festes Slot-Modell.

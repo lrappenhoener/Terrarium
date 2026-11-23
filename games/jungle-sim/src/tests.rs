@@ -191,3 +191,56 @@ fn golden_hash_at_tick_1000() {
     }
     assert_eq!(sim.state_hash(), 0x5317cfd6e2e12024);
 }
+
+#[test]
+fn shuffling_slots_preserves_each_of_a_thousand_logical_states() {
+    let config = JungleConfig {
+        world_size: 64,
+        initial_herbivores: 120,
+        initial_predators: 8,
+        max_animals: 600,
+        reorder_interval: 0,
+        ..JungleConfig::default()
+    };
+    let mut ordered = JungleSim::new(42, config.clone()).unwrap();
+    let mut shuffled = JungleSim::new(
+        42,
+        JungleConfig {
+            debug_shuffle_slots: true,
+            ..config
+        },
+    )
+    .unwrap();
+    for tick in 0..1000 {
+        let commands = [JungleCommand::SpawnAnimals {
+            species: Species::Herbivore,
+            count: 20,
+        }];
+        let commands = if tick % 125 == 0 { &commands[..] } else { &[] };
+        ordered.step(commands);
+        shuffled.step(commands);
+        assert_eq!(
+            ordered.state_hash(),
+            shuffled.state_hash(),
+            "tick {}",
+            tick + 1
+        );
+    }
+    assert!(ordered.births > 0);
+}
+
+#[test]
+fn disabling_spatial_reorder_preserves_reference_hash() {
+    let mut sim = JungleSim::new(
+        42,
+        JungleConfig {
+            reorder_interval: 0,
+            ..JungleConfig::default()
+        },
+    )
+    .unwrap();
+    for _ in 0..1000 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.state_hash(), 0x5317cfd6e2e12024);
+}
