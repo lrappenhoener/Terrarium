@@ -17,6 +17,19 @@ pub struct SimMetrics {
     pub custom_gauges: Vec<(String, f64)>,
 }
 
+/// Receives timing boundaries. Simulation behavior must be independent of the probe.
+pub trait PhaseProbe {
+    fn enter(&mut self, phase: &'static str);
+    fn exit(&mut self, phase: &'static str);
+}
+
+pub struct NoopProbe;
+
+impl PhaseProbe for NoopProbe {
+    fn enter(&mut self, _: &'static str) {}
+    fn exit(&mut self, _: &'static str) {}
+}
+
 pub trait Simulation: Sized {
     type Config: DeserializeOwned + Default + Clone;
     type Command: Serialize + DeserializeOwned;
@@ -31,6 +44,21 @@ pub trait Simulation: Sized {
     /// Returns a deterministic hash of all state that can affect the future.
     fn state_hash(&self) -> u64;
     fn check_invariants(&self) -> Result<(), SimError>;
+
+    /// Diagnostic hashes for localizing differences between runs.
+    fn subsystem_hashes(&self) -> Vec<(&'static str, u64)> {
+        vec![("all", self.state_hash())]
+    }
+
+    /// Equivalent to step, with optional phase boundary notifications.
+    fn step_profiled(&mut self, commands: &[Self::Command], _probe: &mut dyn PhaseProbe) {
+        self.step(commands);
+    }
+
+    /// Describes an opaque identifier for tracing, if supported.
+    fn describe_entity(&self, _id: u64) -> Option<Vec<(String, String)>> {
+        None
+    }
 }
 
 /// FNV-1a over bytes, with little-endian encoding for multibyte values.

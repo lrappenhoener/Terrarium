@@ -4,6 +4,9 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 
 ## Architektur
 
+- Drei Schichten: `sim-host` und `sim-runner` stellen generische Schnittstellen ohne Domänenlogik bereit, `sim-core` enthält wiederverwendbare Simulationsbausteine, `games/*` enthält Regeln und Inhalte.
+- Externe ECS-Crates benötigen eine dokumentierte Begründung. Speicherlayout und Iterationsreihenfolge bleiben unter unserer Kontrolle.
+
 - Die Library von `sim-runner` und ihre Module kennen als Spielschnittstelle ausschließlich `sim-host`. Spielregeln und konkrete Spieltypen gehören in die Spiel-Crates.
 - Nur `crates/sim-runner/src/games.rs` referenziert konkrete Spiele. Ein neues Spiel benötigt im Runner lediglich eine Dependency und einen Registry-Eintrag.
 - Spiele kommunizieren mit dem Runner ausschließlich über den generisch verwendeten `Simulation`-Trait aus `sim-host`.
@@ -11,13 +14,25 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 ## Determinismus
 
 - Im Simulationszustand niemals über `HashMap` oder `HashSet` iterieren. `Vec`, feste Indizes oder `BTreeMap` verwenden und stets in aufsteigender Index- beziehungsweise Schlüsselreihenfolge iterieren.
-- Im Simulationskern keine Systemzeit, kein `thread_rng` und keine Abhängigkeiten von Umgebung oder Speicheradressen. Die einzige Zufallsquelle ist ein per Seed initialisierter `rand_chacha::ChaCha8Rng`.
+- Im Simulationskern keine Systemzeit, kein `thread_rng` und keine Abhängigkeiten von Umgebung oder Speicheradressen. Für systemweite Entscheidungen ist ein per Seed initialisierter `rand_chacha::ChaCha8Rng` zulässig.
 - Zufallswerte ausschließlich über `next_u64()` oder `next_u32()` aus `rand_core` beziehen (`RngCore`, ab 0.10 `Rng`). Werte selbst konvertieren, etwa für `f64` in [0, 1) mit `(x >> 11) as f64 * (1.0 / (1u64 << 53) as f64)`. Keine `rand`-Distributionen oder `gen_range`.
 - Für Gleitkommaarithmetik im Simulationskern nur `+ - * /`, `sqrt`, `abs`, `min`, `max`, `clamp` und Vergleiche verwenden. Transzendente Funktionen wie `sin`, `cos`, `tan`, `exp`, `ln`, `powf`, `hypot` und `atan2` bei Bedarf ausschließlich über `libm` beziehen. Kein `mul_add`.
 - Parallelisierung ist nur bei festgelegter Reduktionsreihenfolge zulässig.
 - `state_hash()` muss den gesamten zukunftsrelevanten Zustand mit `sim_host::StateHasher` abdecken. `std::hash::DefaultHasher` ist dafür unzulässig.
 - Die stabile Rust-Toolchain exakt pinnen und `Cargo.lock` versionieren. Dependency- und Toolchain-Updates bewusst vornehmen und dabei die Golden-Hash-Tests prüfen.
 - Fest erwartete Golden Hashes nur bei beabsichtigten Änderungen am Simulationsverhalten aktualisieren. Den Grund im Commit oder CHANGELOG dokumentieren.
+
+- In `sim-core` und den darauf aufbauenden Spielen besteht der Simulationszustand ausschließlich aus Integer- oder Fixed-Point-Werten. Beide Crates erzwingen `#![deny(clippy::float_arithmetic)]`. Nur `metrics()` darf mit lokalem `#[allow]` und Kommentar Gleitkommaarithmetik verwenden. Das bestehende `dummy-sim` ist ausgenommen.
+- Zufall pro Entität ist zustandslos und hängt ausschließlich von Seed, Tick, generationaler Entitäts-ID und Salt ab. ChaCha-Streams sind systemweiten Entscheidungen wie Weltgenerierung vorbehalten. Das bestehende `dummy-sim` behält seinen Stream.
+- Interaktionen lesen in der Entscheidungsphase ausschließlich über Referenzen den Zustand am Tick-Beginn, sammeln Absichten, lösen Konflikte nach einem vollständigen Schlüssel mit Entitäts-ID als letztem Kriterium und schreiben erst in der Anwendungsphase. Sammelreihenfolge beeinflusst das Ergebnis nicht.
+- Über Tick-Grenzen hinweg ausschließlich generationale IDs speichern. Ziele, Herden und Elternreferenzen vor jeder Nutzung validieren.
+- Entitäten gesammelt am Tick-Ende über einen Command-Buffer in Reihenfolge der auslösenden ID und eines eindeutigen Ordinals erzeugen und entfernen.
+- Teure Updates mit `(tick + key) % interval == 0` über Entitäten oder Kacheln verteilen.
+
+## Runner-Schnittstelle
+
+- Spiel-Configs verwenden `#[serde(default, deny_unknown_fields)]` für Teil-Configs, Overrides und präzise Tippfehlerdiagnose.
+- `PhaseProbe` meldet ausschließlich Zeitgrenzen. Die Simulation liest keine Information daraus und verzweigt niemals abhängig vom Probe.
 
 ## Performance
 
