@@ -6,6 +6,7 @@ resolver = "3"
 edition = "2024"
 
 [workspace.dependencies]
+postcard = { version = "1.2.0", default-features = false, features = ["alloc"] }
 allocation-counter = "0.8.1"
 clap = { version = "4.6.9", features = ["derive"] }
 rand_chacha = "0.10.0"

@@ -28,6 +28,12 @@ impl SystemRng {
         Self(rng)
     }
 
+    pub fn restore(seed: u64, system_id: u64, word_pos: u128) -> Self {
+        let mut rng = Self::new(seed, system_id);
+        rng.0.set_word_pos(word_pos);
+        rng
+    }
+
     pub fn next_u64(&mut self) -> u64 {
         self.0.next_u64()
     }

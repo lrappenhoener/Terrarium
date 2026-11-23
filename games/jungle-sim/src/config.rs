@@ -13,7 +13,7 @@ impl Species {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpeciesConfig {
     pub move_cooldown: u64,
@@ -88,7 +88,7 @@ fn deserialize_predator<'de, D: serde::Deserializer<'de>>(
     })
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JungleConfig {
     pub world_size: i32,

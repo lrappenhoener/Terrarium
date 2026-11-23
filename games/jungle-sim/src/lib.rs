@@ -5,6 +5,7 @@
 mod config;
 mod decision;
 mod diagnostics;
+mod snapshot;
 mod world;
 
 use std::cmp::Reverse;
@@ -39,7 +40,7 @@ pub enum JungleCommand {
     Drought { duration_ticks: u64 },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 struct Vitals {
     species: Species,
     hunger: u16,
@@ -51,7 +52,7 @@ struct Vitals {
     herd: Option<EntityId>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 enum Event {
     Birth(EntityId),
     DroughtEnd,
@@ -137,6 +138,56 @@ pub struct JungleSim {
 }
 
 impl JungleSim {
+    fn empty(
+        seed: u64,
+        config: JungleConfig,
+        world: ChunkedGrid2<Tile>,
+        walkable: usize,
+    ) -> Result<Self, SimError> {
+        let cap = config.max_animals;
+        let n = cap as usize;
+        let size = config.world_size;
+        let occupied = ChunkedGrid2::new(size, size, None)
+            .ok_or_else(|| SimError::InvalidConfig("could not reserve occupancy".into()))?;
+        let spatial = SpatialIndex::new(size, size, 8, 2, n)
+            .ok_or_else(|| SimError::InvalidConfig("could not reserve spatial index".into()))?;
+        let chunk_side = (size as usize)
+            .div_ceil(CHUNK_SIZE as usize)
+            .next_power_of_two();
+        Ok(Self {
+            growth: config.plant_regrowth_per_mille,
+            config,
+            seed,
+            tick: 0,
+            world,
+            walkable,
+            occupied,
+            spatial,
+            allocator: EntityTable::with_capacity(cap),
+            columns: AnimalColumns::with_capacity(n),
+            order: Vec::with_capacity(n),
+            chunk_offsets: vec![0; chunk_side * chunk_side],
+            chunk_keys: Vec::with_capacity(n),
+            permutation: SlotPermutation::with_capacity(n),
+            hunting: SparseStorage::with_capacity(cap),
+            pregnant: SparseStorage::with_capacity(cap),
+            nearby: Vec::with_capacity(n),
+            decisions: Vec::with_capacity(n),
+            moves: IntentBuffer::with_capacity(n),
+            attacks: IntentBuffer::with_capacity(n),
+            grazing: IntentBuffer::with_capacity(n),
+            effects: Vec::with_capacity(n),
+            events: EventQueue::with_capacity(n + 1),
+            commands: EntityCommandBuffer::with_capacity(2 * n),
+            spawn_rng: SystemRng::new(seed, 1),
+            drought_until: None,
+            population: [0; 2],
+            births: 0,
+            deaths: [0; 4],
+            query_counts: [0; 2],
+        })
+    }
+
     fn position(&self, id: EntityId) -> Option<&Point> {
         self.columns.position.get(self.allocator.slot(id)? as usize)
     }
@@ -577,54 +628,13 @@ impl Simulation for JungleSim {
 
     fn new(seed: u64, config: JungleConfig) -> Result<Self, SimError> {
         config.validate()?;
-        let cap = config.max_animals;
-        let n = cap as usize;
-        let size = config.world_size;
-        let (world, walkable) = world::generate(seed, size)?;
+        let (world, walkable) = world::generate(seed, config.world_size)?;
         if config.initial_herbivores as usize + config.initial_predators as usize > walkable {
             return Err(SimError::InvalidConfig(
                 "initial population exceeds walkable tiles".into(),
             ));
         }
-        let occupied = ChunkedGrid2::new(size, size, None)
-            .ok_or_else(|| SimError::InvalidConfig("could not reserve occupancy".into()))?;
-        let spatial = SpatialIndex::new(size, size, 8, 2, n)
-            .ok_or_else(|| SimError::InvalidConfig("could not reserve spatial index".into()))?;
-        let chunk_side = (size as usize)
-            .div_ceil(CHUNK_SIZE as usize)
-            .next_power_of_two();
-        let mut sim = Self {
-            growth: config.plant_regrowth_per_mille,
-            config,
-            seed,
-            tick: 0,
-            world,
-            walkable,
-            occupied,
-            spatial,
-            allocator: EntityTable::with_capacity(cap),
-            columns: AnimalColumns::with_capacity(n),
-            order: Vec::with_capacity(n),
-            chunk_offsets: vec![0; chunk_side * chunk_side],
-            chunk_keys: Vec::with_capacity(n),
-            permutation: SlotPermutation::with_capacity(n),
-            hunting: SparseStorage::with_capacity(cap),
-            pregnant: SparseStorage::with_capacity(cap),
-            nearby: Vec::with_capacity(n),
-            decisions: Vec::with_capacity(n),
-            moves: IntentBuffer::with_capacity(n),
-            attacks: IntentBuffer::with_capacity(n),
-            grazing: IntentBuffer::with_capacity(n),
-            effects: Vec::with_capacity(n),
-            events: EventQueue::with_capacity(n + 1),
-            commands: EntityCommandBuffer::with_capacity(2 * n),
-            spawn_rng: SystemRng::new(seed, 1),
-            drought_until: None,
-            population: [0; 2],
-            births: 0,
-            deaths: [0; 4],
-            query_counts: [0; 2],
-        };
+        let mut sim = Self::empty(seed, config, world, walkable)?;
         for _ in 0..sim.config.initial_herbivores {
             sim.spawn_external(Species::Herbivore, true);
         }
@@ -633,6 +643,26 @@ impl Simulation for JungleSim {
         }
         sim.rebuild_spatial();
         Ok(sim)
+    }
+
+    fn snapshot_version() -> u32 {
+        1
+    }
+
+    fn save_snapshot(&self, out: &mut Vec<u8>) -> Result<(), SimError> {
+        self.encode_snapshot(out)
+    }
+
+    fn load_snapshot(bytes: &[u8]) -> Result<Self, SimError> {
+        Self::decode_snapshot(bytes)
+    }
+
+    fn content_fingerprint(&self) -> u64 {
+        self.fingerprint()
+    }
+
+    fn debug_dump(&self, out: &mut String) -> Result<(), SimError> {
+        self.write_debug_dump(out)
     }
 
     fn step(&mut self, commands: &[JungleCommand]) {

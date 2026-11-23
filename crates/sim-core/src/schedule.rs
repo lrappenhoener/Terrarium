@@ -54,6 +54,23 @@ impl<T> EventQueue<T> {
         true
     }
 
+    /// Rebuilds a queue with its original stable tie-break sequence.
+    pub fn restore(capacity: usize, sequence: u64, events: Vec<(u64, u64, T)>) -> Option<Self> {
+        if events.len() > capacity {
+            return None;
+        }
+        let mut result = Self::with_capacity(capacity);
+        result.seq = sequence;
+        let mut seen = std::collections::BTreeSet::new();
+        for (tick, seq, value) in events {
+            if seq >= sequence || !seen.insert(seq) {
+                return None;
+            }
+            result.queue.push(Entry { tick, seq, value });
+        }
+        Some(result)
+    }
+
     pub fn pop_due(&mut self, tick: u64) -> Option<T> {
         if self.queue.peek()?.tick > tick {
             return None;

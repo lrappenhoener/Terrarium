@@ -6,7 +6,7 @@ use sim_host::SimError;
 
 pub(crate) const BIOMASS_CAP: u16 = 1000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Terrain {
     Water,
     Grass,
@@ -51,7 +51,7 @@ pub(crate) fn generate(seed: u64, size: i32) -> Result<(ChunkedGrid2<Tile>, usiz
     let water_x = below(rng.next_u64(), 5) as i32;
     let water_y = below(rng.next_u64(), 5) as i32;
     let mut walkable = 0;
-    let mut frontier = Vec::with_capacity(world.len());
+
     for index in 0..world.len() {
         let Some(tile) = world.get_index_mut(index) else {
             continue;
@@ -62,8 +62,6 @@ pub(crate) fn generate(seed: u64, size: i32) -> Result<(ChunkedGrid2<Tile>, usiz
         let patch = below(rng.next_u64(), 100);
         tile.terrain = if (x % 9 == water_x && y % 9 == water_y) || (x == size / 2 && y == size / 2)
         {
-            tile.water_distance = 0;
-            frontier.push(Point { x, y });
             Terrain::Water
         } else if patch < 5 {
             Terrain::Rock
@@ -75,6 +73,25 @@ pub(crate) fn generate(seed: u64, size: i32) -> Result<(ChunkedGrid2<Tile>, usiz
         if tile.walkable() {
             tile.biomass = 500 + (patch as u16 * 5);
             walkable += 1;
+        }
+    }
+    rebuild_water_distances(&mut world, size);
+    Ok((world, walkable))
+}
+
+pub(crate) fn rebuild_water_distances(world: &mut ChunkedGrid2<Tile>, size: i32) {
+    let mut frontier = Vec::with_capacity(world.len());
+    for index in 0..world.len() {
+        if let Some(tile) = world.get_index_mut(index) {
+            tile.water_distance = if tile.terrain == Terrain::Water {
+                frontier.push(Point {
+                    x: index as i32 % size,
+                    y: index as i32 / size,
+                });
+                0
+            } else {
+                u16::MAX
+            };
         }
     }
     let mut cursor = 0;
@@ -99,5 +116,4 @@ pub(crate) fn generate(seed: u64, size: i32) -> Result<(ChunkedGrid2<Tile>, usiz
             }
         }
     }
-    Ok((world, walkable))
 }

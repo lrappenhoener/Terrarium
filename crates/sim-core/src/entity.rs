@@ -241,6 +241,12 @@ impl<T> EntityCommandBuffer<T> {
         }
     }
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AllocatorState {
+    generations: Vec<u32>,
+    free: Vec<u32>,
+}
+
 /// Maps stable generational IDs to dense, transient component slots.
 pub struct EntityTable {
     allocator: EntityAllocator,
@@ -307,6 +313,67 @@ impl EntityTable {
 
     pub fn hash_state(&self, hash: &mut StateHasher) {
         self.allocator.hash_state(hash);
+    }
+
+    pub fn snapshot_state(&self) -> AllocatorState {
+        AllocatorState {
+            generations: self
+                .allocator
+                .slots
+                .iter()
+                .map(|slot| slot.generation)
+                .collect(),
+            free: self.allocator.free.clone(),
+        }
+    }
+
+    /// Restores generational history and derives dense slots from live IDs.
+    pub fn restore_state(
+        capacity: u32,
+        state: AllocatorState,
+        live: impl IntoIterator<Item = EntityId>,
+    ) -> Option<Self> {
+        if state.generations.len() > capacity as usize || state.free.len() > state.generations.len()
+        {
+            return None;
+        }
+        let mut table = Self::with_capacity(capacity);
+        let mut free = vec![false; state.generations.len()];
+        for index in state.free {
+            let available = free.get_mut(index as usize)?;
+            if std::mem::replace(available, true) || state.generations[index as usize] == 0 {
+                return None;
+            }
+            table.allocator.free.push(index);
+        }
+        table
+            .allocator
+            .slots
+            .extend(state.generations.into_iter().map(|generation| Slot {
+                generation,
+                alive: false,
+            }));
+        for id in live {
+            let index = id.index as usize;
+            let slot = table.allocator.slots.get_mut(index)?;
+            if slot.alive || slot.generation != id.generation || free[index] {
+                return None;
+            }
+            slot.alive = true;
+            table.by_index[index] = table.by_slot.len() as u32;
+            table.by_slot.push(id);
+        }
+        if table
+            .allocator
+            .slots
+            .iter()
+            .zip(free)
+            .any(|(slot, free)| !slot.alive && !free && slot.generation != u32::MAX)
+        {
+            return None;
+        }
+        table.allocator.len = table.by_slot.len();
+        Some(table)
     }
 
     /// Reorders slots using a validated destination-to-source permutation.

@@ -10,7 +10,7 @@ use crate::{
     world::{Tile, neighbors},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Action {
     Graze,
     Drink,

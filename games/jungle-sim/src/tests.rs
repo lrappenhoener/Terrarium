@@ -246,3 +246,73 @@ fn disabling_spatial_reorder_preserves_reference_hash() {
     }
     assert_eq!(sim.state_hash(), 0x5317cfd6e2e12024);
 }
+
+fn snapshot_config() -> JungleConfig {
+    JungleConfig {
+        world_size: 128,
+        initial_herbivores: 500,
+        initial_predators: 25,
+        max_animals: 2_000,
+        ..JungleConfig::default()
+    }
+}
+
+fn roundtrip(sim: &JungleSim) -> JungleSim {
+    let mut bytes = Vec::new();
+    sim.save_snapshot(&mut bytes).unwrap();
+    let loaded = JungleSim::load_snapshot(&bytes).unwrap();
+    assert_eq!(loaded.state_hash(), sim.state_hash());
+    assert_eq!(loaded.subsystem_hashes(), sim.subsystem_hashes());
+    assert_eq!(loaded.metrics().custom_gauges, sim.metrics().custom_gauges);
+    loaded
+}
+
+#[test]
+fn snapshot_preserves_each_tick_across_reorder_boundaries() {
+    let mut continuous = JungleSim::new(42, snapshot_config()).unwrap();
+    let mut interrupted = roundtrip(&continuous);
+    for tick in 1..=1000 {
+        continuous.step(&[]);
+        interrupted.step(&[]);
+        if [1, 63, 64, 65, 500, 999].contains(&tick) {
+            interrupted = roundtrip(&interrupted);
+        }
+        assert_eq!(
+            continuous.state_hash(),
+            interrupted.state_hash(),
+            "tick {tick}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_preserves_pregnancy_and_active_drought_events() {
+    let mut sim = JungleSim::new(42, snapshot_config()).unwrap();
+    sim.step(&[JungleCommand::Drought {
+        duration_ticks: 500,
+    }]);
+    while sim.pregnant.iter().next().is_none() && sim.tick() < 300 {
+        sim.step(&[]);
+    }
+    assert!(sim.pregnant.iter().next().is_some());
+    assert_eq!(sim.drought_until, Some(500));
+    let mut resumed = roundtrip(&sim);
+    while sim.tick() < 600 {
+        sim.step(&[]);
+        resumed.step(&[]);
+        assert_eq!(resumed.state_hash(), sim.state_hash());
+    }
+    assert_eq!(resumed.drought_until, None);
+}
+
+#[test]
+fn golden_v1_snapshot_loads_and_reaches_reference() {
+    let bytes = include_bytes!("../tests/fixtures/jungle-v1-t500.bin");
+    let mut sim = JungleSim::load_snapshot(bytes).unwrap();
+    assert_eq!(sim.tick(), 500);
+    assert_eq!(sim.state_hash(), 0xcd31ad5b0c3262ff);
+    for _ in 500..1000 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.state_hash(), 0x22ed95e00104e9ba);
+}
