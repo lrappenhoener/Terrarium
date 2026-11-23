@@ -125,26 +125,7 @@ fn write_dumps(
     let b_path = dir.join(format!("tick-{tick}-b.txt"));
     container::write(&a_path, a.as_bytes())?;
     container::write(&b_path, b.as_bytes())?;
-    let mut differences = Vec::new();
-    let mut left = a.lines();
-    let mut right = b.lines();
-    for line in 1.. {
-        let x = left.next();
-        let y = right.next();
-        if x.is_none() && y.is_none() {
-            break;
-        }
-        if x != y {
-            differences.push(format!(
-                "line {line}: A {} | B {}",
-                x.unwrap_or("<missing>"),
-                y.unwrap_or("<missing>")
-            ));
-            if differences.len() == 20 {
-                break;
-            }
-        }
-    }
+    let differences = keyed_diff(&a, &b, 20);
     Ok(format!(
         "\ndumps: {} and {}\n{}",
         a_path.display(),
@@ -252,4 +233,101 @@ pub(crate) fn locate<S: Simulation>(
         return Ok(Some(exact));
     }
     search.scan(None)
+}
+
+/// Splits `key<TAB>value` lines. A line without a tab is its own key with an empty value.
+/// Repeated keys receive an occurrence suffix so that each entry stays addressable.
+fn keyed_lines(dump: &str) -> Vec<(String, &str)> {
+    let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+    dump.lines()
+        .map(|line| {
+            let (key, value) = line.split_once('\t').unwrap_or((line, ""));
+            let count = seen.entry(key).or_insert(0);
+            *count += 1;
+            let key = if *count == 1 {
+                key.to_owned()
+            } else {
+                format!("{key}#{count}")
+            };
+            (key, value)
+        })
+        .collect()
+}
+
+fn entry(key: &str, value: &str) -> String {
+    if value.is_empty() {
+        key.to_owned()
+    } else {
+        format!("{key}\t{value}")
+    }
+}
+
+/// Compares dumps by stable key: entries only in A, only in B, and differing values.
+/// Reports follow A's line order, then B's order for its extra keys.
+pub(crate) fn keyed_diff(a: &str, b: &str, limit: usize) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let left = keyed_lines(a);
+    let right = keyed_lines(b);
+    let left_map: BTreeMap<&str, &str> = left.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let right_map: BTreeMap<&str, &str> = right.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let mut differences = Vec::new();
+    let mut total = 0usize;
+    let mut report = |message: String| {
+        total += 1;
+        if differences.len() < limit {
+            differences.push(message);
+        }
+    };
+    for (key, value) in &left {
+        match right_map.get(key.as_str()) {
+            None => report(format!("only in A: {}", entry(key, value))),
+            Some(other) if other != value => {
+                report(format!("differs {key}: A {value} | B {other}"));
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, value) in &right {
+        if !left_map.contains_key(key.as_str()) {
+            report(format!("only in B: {}", entry(key, value)));
+        }
+    }
+    if total > differences.len() {
+        differences.push(format!(
+            "... {} more differences",
+            total - differences.len()
+        ));
+    }
+    differences
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyed_diff;
+
+    #[test]
+    fn an_extra_entity_is_reported_once_instead_of_shifting_all_lines() {
+        let a = "meta\ttick=5\nentity:1:0\tx=1\nentity:3:0\tx=3\nentity:4:0\tx=4\n";
+        let b =
+            "meta\ttick=5\nentity:1:0\tx=1\nentity:2:0\tx=2\nentity:3:0\tx=3\nentity:4:0\tx=4\n";
+        assert_eq!(keyed_diff(a, b, 20), ["only in B: entity:2:0\tx=2"]);
+        let c = "meta\ttick=5\nentity:1:0\tx=9\nentity:3:0\tx=3\n";
+        assert_eq!(
+            keyed_diff(a, c, 20),
+            [
+                "differs entity:1:0: A x=1 | B x=9",
+                "only in A: entity:4:0\tx=4"
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_without_tabs_compare_as_whole_lines() {
+        let diff = keyed_diff("same\nold line\n", "same\nnew line\n", 20);
+        assert_eq!(diff, ["only in A: old line", "only in B: new line"]);
+        let many: String = (0..30).map(|i| format!("k{i}\t{i}\n")).collect();
+        let diff = keyed_diff(&many, "", 5);
+        assert_eq!(diff.len(), 6);
+        assert_eq!(diff[5], "... 25 more differences");
+    }
 }

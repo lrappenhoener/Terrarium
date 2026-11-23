@@ -431,7 +431,11 @@ impl<const NONDETERMINISTIC: bool> Simulation for Delayed<NONDETERMINISTIC> {
         })
     }
     fn debug_dump(&self, out: &mut String) -> Result<(), SimError> {
-        *out = format!("a tick={}\nb entity=17 value={}\n", self.tick, self.value());
+        *out = format!(
+            "a\ttick={}\nentity:17:0\tvalue={}\n",
+            self.tick,
+            self.value()
+        );
         Ok(())
     }
 }
@@ -465,14 +469,14 @@ fn assert_fine_failure<const NONDETERMINISTIC: bool>(mode: &str) {
         ));
         assert!(message.contains("317 ticks after reload at 120"));
     }
-    assert!(message.contains("line 2: A b entity=17 value=0 | B b entity=17 value=1"));
+    assert!(message.contains("differs entity:17:0: A value=0 | B value=1"));
     assert_eq!(
         std::fs::read_to_string(dir.join("tick-437-a.txt")).unwrap(),
-        "a tick=437\nb entity=17 value=0\n"
+        "a\ttick=437\nentity:17:0\tvalue=0\n"
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("tick-437-b.txt")).unwrap(),
-        "a tick=437\nb entity=17 value=1\n"
+        "a\ttick=437\nentity:17:0\tvalue=1\n"
     );
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -73,6 +73,11 @@ pub trait Simulation: Sized {
     }
 
     /// Writes a line-oriented logical dump with a layout-independent order.
+    ///
+    /// Each line has the form `key<TAB>value` with a unique, stable key such as
+    /// `entity:17:3` or `tile:12,40,5`. Runners compare dumps by key and report
+    /// entries only in one dump and differing values. Lines without a tab are
+    /// compared as whole lines.
     fn debug_dump(&self, _out: &mut String) -> Result<(), SimError> {
         Err(SimError::Unsupported("debug_dump"))
     }
