@@ -50,4 +50,18 @@ fn required_methods_alone_are_sufficient() {
     assert_eq!(probe.0, 0);
     assert_eq!(sim.subsystem_hashes(), [("all", sim.state_hash())]);
     assert_eq!(sim.describe_entity(0), None);
+    assert_eq!(Legacy::snapshot_version(), 0);
+    assert_eq!(sim.content_fingerprint(), 0);
+    assert!(matches!(
+        sim.save_snapshot(&mut Vec::new()),
+        Err(SimError::Unsupported("snapshots"))
+    ));
+    assert!(matches!(
+        Legacy::load_snapshot(&[]),
+        Err(SimError::Unsupported("snapshots"))
+    ));
+    assert!(matches!(
+        sim.debug_dump(&mut String::new()),
+        Err(SimError::Unsupported("debug_dump"))
+    ));
 }

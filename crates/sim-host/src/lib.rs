@@ -3,12 +3,19 @@
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SimError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
     #[error("invariant violation: {0}")]
     InvariantViolation(String),
+    #[error("unsupported feature: {0}")]
+    Unsupported(&'static str),
+    #[error("snapshot/container error: {0}")]
+    Snapshot(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +51,31 @@ pub trait Simulation: Sized {
     /// Returns a deterministic hash of all state that can affect the future.
     fn state_hash(&self) -> u64;
     fn check_invariants(&self) -> Result<(), SimError>;
+
+    /// Version of the game's snapshot payload. Zero indicates unsupported snapshots.
+    fn snapshot_version() -> u32 {
+        0
+    }
+
+    /// Writes the complete logical state, excluding rebuildable derived values.
+    fn save_snapshot(&self, _out: &mut Vec<u8>) -> Result<(), SimError> {
+        Err(SimError::Unsupported("snapshots"))
+    }
+
+    /// Restores the complete logical state and rebuilds its derived values.
+    fn load_snapshot(_bytes: &[u8]) -> Result<Self, SimError> {
+        Err(SimError::Unsupported("snapshots"))
+    }
+
+    /// Fingerprint of effective settings and versioned game content.
+    fn content_fingerprint(&self) -> u64 {
+        0
+    }
+
+    /// Writes a line-oriented logical dump with a layout-independent order.
+    fn debug_dump(&self, _out: &mut String) -> Result<(), SimError> {
+        Err(SimError::Unsupported("debug_dump"))
+    }
 
     /// Current sizes of the opaque dimensions used for performance normalization.
     fn scale_units(&self) -> Vec<(&'static str, u64)> {

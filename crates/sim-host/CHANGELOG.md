@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Added opt-in snapshot version, save/load, content fingerprint and logical dump hooks with defaults for existing games. `SimError` is now non-exhaustive so future diagnostic variants can be added. External exhaustive matches need a fallback. The crate exposes its version for archive headers.
 
 - Added default scaling dimension hooks so phase costs can be normalized by measured workload without runner knowledge of the simulation.
 

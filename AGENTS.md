@@ -73,3 +73,9 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Release verwendet keine globalen Overflow-Checks. Der Standardbenchmark zeigte 4,78 % Mehrkosten. Langlaufzähler und Zeitgrenzen verwenden explizite Sättigung, IDs und Ereignisfolgen geprüfte Nachfolger und der PRNG explizites Wrapping. In Hot Paths bleiben arithmetische Operationen mit Grenzen aus geprüften Dimensionen, Kapazitäten und Wertebereichen zulässig. Bei Änderungen diese Grenzen erneut prüfen.
 - Neue Benchmark-Zahlen in `BENCHMARKS.md` sind Mediane aus mindestens drei Läufen.
 - Performance-Ruckler mit `--worst-ticks` untersuchen. `scripts/ci.sh` muss vor Abschluss erfolgreich sein. `release-checked` aktiviert Overflow-Checks für Langläufe.
+
+## Snapshots und Replays
+
+- Snapshots speichern den vollständigen logischen Zustand. Indizes, Caches, Puffer und Slot-Reihenfolge werden beim Laden neu aufgebaut. Formatänderungen erhöhen die Snapshot-Version und benötigen eine Migration oder einen dokumentierten Bruch. Der Golden Snapshot muss weiterhin laden.
+- Neuer Zustand gehört gleichzeitig in Snapshot, Hash, `debug_dump` und Invarianten. Spiele mit Snapshot-Unterstützung prüfen Save/Load im Runner.
+- Replays sind das Standardformat für Bug-Reports. Simulationsfehler möglichst zuerst als Replay oder Snapshot reproduzieren und anschließend als Regressionstest erhalten.
