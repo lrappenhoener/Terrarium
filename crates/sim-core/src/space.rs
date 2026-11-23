@@ -196,3 +196,142 @@ pub fn morton_code(x: u32, y: u32) -> u64 {
     }
     spread(x) | (spread(y) << 1)
 }
+
+/// A rectangular grid with padded 32×32 blocks stored in Morton order.
+/// Public indices and the default iteration retain logical row order.
+pub struct ChunkedGrid2<T> {
+    width: i32,
+    height: i32,
+    columns: usize,
+    len: usize,
+    blocks: Vec<(i32, i32)>,
+    block_at: Vec<usize>,
+    values: Vec<T>,
+}
+
+impl<T: Clone> ChunkedGrid2<T> {
+    pub fn new(width: i32, height: i32, value: T) -> Option<Self> {
+        let len = area(width, height)?;
+        let columns = (width - 1) / CHUNK_SIZE + 1;
+        let rows = (height - 1) / CHUNK_SIZE + 1;
+        let count = area(columns, rows)?;
+        let padded = count.checked_mul((CHUNK_SIZE * CHUNK_SIZE) as usize)?;
+        let mut blocks = Vec::new();
+        let mut block_at = Vec::new();
+        let mut values = Vec::new();
+        blocks.try_reserve_exact(count).ok()?;
+        block_at.try_reserve_exact(count).ok()?;
+        values.try_reserve_exact(padded).ok()?;
+        for y in 0..rows {
+            for x in 0..columns {
+                blocks.push((x, y));
+            }
+        }
+        blocks.sort_unstable_by_key(|&(x, y)| morton_code(x as u32, y as u32));
+        block_at.resize(count, 0);
+        for (block, &(x, y)) in blocks.iter().enumerate() {
+            block_at[y as usize * columns as usize + x as usize] = block;
+        }
+        values.resize(padded, value);
+        Some(Self {
+            width,
+            height,
+            columns: columns as usize,
+            len,
+            blocks,
+            block_at,
+            values,
+        })
+    }
+}
+
+impl<T> ChunkedGrid2<T> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn in_bounds(&self, point: Point) -> bool {
+        (0..self.width).contains(&point.x) && (0..self.height).contains(&point.y)
+    }
+
+    pub fn index(&self, point: Point) -> Option<usize> {
+        self.in_bounds(point)
+            .then(|| point.y as usize * self.width as usize + point.x as usize)
+    }
+
+    fn physical(&self, point: Point) -> usize {
+        let size = CHUNK_SIZE as usize;
+        let x = point.x as usize;
+        let y = point.y as usize;
+        let block = self.block_at[(y / size) * self.columns + x / size];
+        (block * size + y % size) * size + x % size
+    }
+
+    pub fn get(&self, point: Point) -> Option<&T> {
+        self.in_bounds(point)
+            .then(|| &self.values[self.physical(point)])
+    }
+
+    pub fn set(&mut self, point: Point, value: T) -> bool {
+        if !self.in_bounds(point) {
+            return false;
+        }
+        let index = self.physical(point);
+        self.values[index] = value;
+        true
+    }
+
+    pub fn get_index(&self, index: usize) -> Option<&T> {
+        let width = self.width as usize;
+        (index < self.len).then(|| {
+            &self.values[self.physical(Point {
+                x: (index % width) as i32,
+                y: (index / width) as i32,
+            })]
+        })
+    }
+
+    pub fn get_index_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index >= self.len {
+            return None;
+        }
+        let width = self.width as usize;
+        let physical = self.physical(Point {
+            x: (index % width) as i32,
+            y: (index / width) as i32,
+        });
+        self.values.get_mut(physical)
+    }
+
+    /// Real cells, excluding block padding, in logical row order.
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        (0..self.height).flat_map(move |y| {
+            (0..self.width).map(move |x| &self.values[self.physical(Point { x, y })])
+        })
+    }
+
+    /// Visits real row segments in physical block order. The first index is logical.
+    pub fn for_each_block_row_mut(&mut self, mut visit: impl FnMut(usize, &mut [T])) {
+        let size = CHUNK_SIZE as usize;
+        for (&(bx, by), block) in self
+            .blocks
+            .iter()
+            .zip(self.values.chunks_exact_mut(size * size))
+        {
+            let x = bx * CHUNK_SIZE;
+            let y = by * CHUNK_SIZE;
+            let width = (self.width - x).min(CHUNK_SIZE) as usize;
+            let height = (self.height - y).min(CHUNK_SIZE) as usize;
+            for (offset, row) in block.chunks_exact_mut(size).take(height).enumerate() {
+                visit(
+                    (y as usize + offset) * self.width as usize + x as usize,
+                    &mut row[..width],
+                );
+            }
+        }
+    }
+}

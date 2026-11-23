@@ -1,6 +1,6 @@
 use sim_core::{
     rng::{SystemRng, below, stateless_u64},
-    space::{Grid2, Point},
+    space::{ChunkedGrid2, Point},
 };
 use sim_host::SimError;
 
@@ -36,8 +36,8 @@ pub(crate) fn neighbors(point: Point) -> impl Iterator<Item = Point> {
     })
 }
 
-pub(crate) fn generate(seed: u64, size: i32) -> Result<(Grid2<Tile>, usize), SimError> {
-    let mut world = Grid2::new(
+pub(crate) fn generate(seed: u64, size: i32) -> Result<(ChunkedGrid2<Tile>, usize), SimError> {
+    let mut world = ChunkedGrid2::new(
         size,
         size,
         Tile {
@@ -51,8 +51,11 @@ pub(crate) fn generate(seed: u64, size: i32) -> Result<(Grid2<Tile>, usize), Sim
     let water_x = below(rng.next_u64(), 5) as i32;
     let water_y = below(rng.next_u64(), 5) as i32;
     let mut walkable = 0;
-    let mut frontier = Vec::with_capacity(world.as_slice().len());
-    for (index, tile) in world.as_mut_slice().iter_mut().enumerate() {
+    let mut frontier = Vec::with_capacity(world.len());
+    for index in 0..world.len() {
+        let Some(tile) = world.get_index_mut(index) else {
+            continue;
+        };
         let x = index as i32 % size;
         let y = index as i32 / size;
         let noise = below(stateless_u64(seed, (x / 8) as u64, (y / 8) as u64, 1), 100);

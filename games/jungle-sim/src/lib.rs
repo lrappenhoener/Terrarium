@@ -18,7 +18,7 @@ use sim_core::{
     intent::IntentBuffer,
     rng::{SystemRng, below, stateless_u64},
     schedule::EventQueue,
-    space::{CHUNK_SIZE, Grid2, Point, SpatialHit, SpatialIndex, morton_code},
+    space::{CHUNK_SIZE, ChunkedGrid2, Point, SpatialHit, SpatialIndex, morton_code},
 };
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
@@ -90,9 +90,9 @@ pub struct JungleSim {
     config: JungleConfig,
     seed: u64,
     tick: u64,
-    world: Grid2<Tile>,
+    world: ChunkedGrid2<Tile>,
     walkable: usize,
-    occupied: Grid2<Option<EntityId>>,
+    occupied: ChunkedGrid2<Option<EntityId>>,
     allocator: EntityTable,
     columns: AnimalColumns,
     order: Vec<usize>,
@@ -211,7 +211,7 @@ impl JungleSim {
         {
             return false;
         }
-        let len = self.world.as_slice().len();
+        let len = self.world.len();
         let size = self.config.world_size;
         let start = below(self.spawn_rng.next_u64(), len as u64) as usize;
         for offset in 0..len {
@@ -331,7 +331,10 @@ impl JungleSim {
         self.grazing.resolve(
             |_| (),
             |winner, losers| {
-                let mut available = self.world.as_slice()[winner.0].biomass;
+                let mut available = self
+                    .world
+                    .get_index(winner.0)
+                    .map_or(0, |tile| tile.biomass);
                 for &(tile, id, amount) in std::iter::once(winner).chain(losers) {
                     let taken = amount.min(available);
                     available -= taken;
@@ -409,7 +412,9 @@ impl JungleSim {
                     }
                 }
                 Effect::Eat(id, tile, taken) => {
-                    self.world.as_mut_slice()[tile].biomass -= taken;
+                    if let Some(tile) = self.world.get_index_mut(tile) {
+                        tile.biomass -= taken;
+                    }
                     if let Some(animal) = self
                         .allocator
                         .slot(id)
@@ -445,19 +450,20 @@ impl JungleSim {
     fn environment(&mut self) {
         let stripes = self.config.plant_update_stripes;
         let stripe = (self.tick % stripes as u64) as usize;
-        let Some(tiles) = self.world.as_mut_slice().get_mut(stripe..) else {
-            return;
-        };
         let drought = self.drought_until.is_some_and(|end| self.tick < end);
-        for tile in tiles.iter_mut().step_by(stripes) {
-            if tile.walkable() {
-                tile.biomass = if drought {
-                    tile.biomass.saturating_sub(12)
-                } else {
-                    tile.biomass.saturating_add(self.growth).min(BIOMASS_CAP)
-                };
+        self.world.for_each_block_row_mut(|first, row| {
+            // Each update reads and writes only its own tile.
+            let offset = (stripe + stripes - first % stripes) % stripes;
+            for tile in row.iter_mut().skip(offset).step_by(stripes) {
+                if tile.walkable() {
+                    tile.biomass = if drought {
+                        tile.biomass.saturating_sub(12)
+                    } else {
+                        tile.biomass.saturating_add(self.growth).min(BIOMASS_CAP)
+                    };
+                }
             }
-        }
+        });
     }
 
     fn lifecycle(&mut self) {
@@ -551,7 +557,7 @@ impl Simulation for JungleSim {
                 "initial population exceeds walkable tiles".into(),
             ));
         }
-        let occupied = Grid2::new(size, size, None)
+        let occupied = ChunkedGrid2::new(size, size, None)
             .ok_or_else(|| SimError::InvalidConfig("could not reserve occupancy".into()))?;
         let spatial = SpatialIndex::new(size, size, 8, n)
             .ok_or_else(|| SimError::InvalidConfig("could not reserve spatial index".into()))?;
@@ -639,7 +645,7 @@ impl Simulation for JungleSim {
     fn scale_units(&self) -> Vec<(&'static str, u64)> {
         vec![
             ("entities", self.allocator.len() as u64),
-            ("tiles", self.world.as_slice().len() as u64),
+            ("tiles", self.world.len() as u64),
         ]
     }
 

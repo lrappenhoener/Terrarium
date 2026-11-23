@@ -2,7 +2,7 @@ use sim_core::{
     behavior::select_best,
     entity::{EntityId, EntityTable, SparseStorage},
     rng::{below, stateless_u64},
-    space::{Grid2, Point, SpatialHit, SpatialIndex},
+    space::{ChunkedGrid2, Point, SpatialHit, SpatialIndex},
 };
 
 use crate::{
@@ -68,8 +68,8 @@ pub(crate) struct Decision {
 
 pub(crate) struct View<'a> {
     pub config: &'a JungleConfig,
-    pub world: &'a Grid2<Tile>,
-    pub occupied: &'a Grid2<Option<EntityId>>,
+    pub world: &'a ChunkedGrid2<Tile>,
+    pub occupied: &'a ChunkedGrid2<Option<EntityId>>,
     pub allocator: &'a EntityTable,
     pub columns: &'a AnimalColumns,
     pub hunting: &'a SparseStorage<EntityId>,

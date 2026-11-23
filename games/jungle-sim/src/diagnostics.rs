@@ -15,7 +15,6 @@ impl JungleSim {
             .sum::<u64>();
         let biomass = self
             .world
-            .as_slice()
             .iter()
             .map(|tile| u64::from(tile.biomass))
             .sum::<u64>();
@@ -51,7 +50,7 @@ impl JungleSim {
     pub(crate) fn hashes(&self) -> [(&'static str, u64); 4] {
         let mut world = StateHasher::new();
         world.write_u32(self.config.world_size as u32);
-        for tile in self.world.as_slice() {
+        for tile in self.world.iter() {
             world.write_u8(tile.terrain as u8);
             world.write_u32(u32::from(tile.biomass));
             world.write_u32(u32::from(tile.water_distance));
@@ -183,7 +182,7 @@ impl JungleSim {
         if self.spatial.len() != self.allocator.len()
             || self.columns.position.len() != self.allocator.len()
             || self.columns.vitals.len() != self.allocator.len()
-            || self.occupied.as_slice().iter().flatten().count() != self.allocator.len()
+            || self.occupied.iter().flatten().count() != self.allocator.len()
         {
             return Err(fail("allocator, occupancy, and component counts differ"));
         }
@@ -220,7 +219,6 @@ impl JungleSim {
         if population != self.population
             || self
                 .world
-                .as_slice()
                 .iter()
                 .any(|t| t.biomass > BIOMASS_CAP || (!t.walkable() && t.biomass != 0))
             || self

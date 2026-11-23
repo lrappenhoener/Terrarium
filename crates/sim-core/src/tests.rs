@@ -229,6 +229,37 @@ fn dense_slots_and_columns_survive_lifecycle_and_permutations() {
 }
 
 #[test]
+fn chunked_grid_retains_logical_indices_and_excludes_padding() {
+    use crate::space::ChunkedGrid2;
+    let (width, height) = (79, 44);
+    let mut flat = Grid2::new(width, height, 0).unwrap();
+    let mut chunked = ChunkedGrid2::new(width, height, 0).unwrap();
+    let mut rng = SystemRng::new(42, 9);
+    for value in 1..1500 {
+        let point = Point {
+            x: below(rng.next_u64(), (width + 2) as u64) as i32 - 1,
+            y: below(rng.next_u64(), (height + 2) as u64) as i32 - 1,
+        };
+        assert_eq!(flat.set(point, value), chunked.set(point, value));
+        assert_eq!(flat.get(point), chunked.get(point));
+    }
+    chunked.for_each_block_row_mut(|first, row| {
+        for (offset, value) in row.iter_mut().enumerate() {
+            if (first + offset).is_multiple_of(7) {
+                *value += 1;
+            }
+        }
+    });
+    for tile in flat.as_mut_slice().iter_mut().step_by(7) {
+        *tile += 1;
+    }
+    assert!(chunked.iter().eq(flat.as_slice()));
+    for (index, value) in flat.as_slice().iter().enumerate() {
+        assert_eq!(chunked.get_index(index), Some(value));
+    }
+}
+
+#[test]
 fn entity_table_rejects_an_old_generation_after_reuse() {
     let mut table = crate::entity::EntityTable::with_capacity(1);
     let old = table.create().unwrap();

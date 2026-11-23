@@ -15,12 +15,14 @@ fn mini() -> JungleSim {
         },
     )
     .unwrap();
-    sim.world.as_mut_slice().fill(Tile {
-        terrain: Terrain::Grass,
-        biomass: 500,
-        water_distance: 3,
+    sim.world.for_each_block_row_mut(|_, row| {
+        row.fill(Tile {
+            terrain: Terrain::Grass,
+            biomass: 500,
+            water_distance: 3,
+        })
     });
-    sim.walkable = sim.world.as_slice().len();
+    sim.walkable = sim.world.len();
     sim
 }
 
@@ -142,12 +144,12 @@ fn commands_spawn_adjust_growth_and_schedule_end_of_drought() {
     ]);
     assert_eq!(sim.population, [3, 0]);
     assert_eq!(sim.growth, 17);
-    assert_eq!(sim.world.as_slice()[0].biomass, 488);
+    assert_eq!(sim.world.get_index(0).unwrap().biomass, 488);
     assert_eq!(sim.drought_until, Some(2));
     sim.step(&[]);
     sim.step(&[]);
     assert_eq!(sim.drought_until, None);
-    assert_eq!(sim.world.as_slice()[2].biomass, 517);
+    assert_eq!(sim.world.get_index(2).unwrap().biomass, 517);
     sim.check_invariants().unwrap();
 }
 
