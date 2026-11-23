@@ -258,6 +258,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-core"
+version = "0.1.0"
+dependencies = [
+ "rand_chacha",
+ "rand_core",
+ "serde",
+ "sim-host",
+ "thiserror",
+]
+
+[[package]]
 name = "sim-host"
 version = "0.1.0"
 dependencies = [
