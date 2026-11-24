@@ -340,3 +340,88 @@ level z=2 tick=20000
    - **Feuer:** Brennstoff und Brennzustand als Material- bzw. Kacheleigenschaft (heute entzündet sich nur Nahrung und wird zerstört), dazu Sauerstoff aus dem Gasfeld, Wärmeabgabe über `add_energy` und Rauch als Gas. Die Ausbreitung lässt sich über die vorhandene zustandslose Zufallsquelle pro Kachel regeln.
    - **Holz und Bauteile:** Brennbare Bauteile und Brücken, die bei Brand einstürzen (Kopplung an `note_removed`).
    - **Druck:** Für Gas und Wasser gleichermaßen fehlt ein Druckmodell (siehe 7).
+
+## Etappe 6 – Datengetriebene Inhalte, Handwerk und Warenketten: Abschlussbericht
+
+`scripts/ci.sh` lief mit Exit 0: fmt, striktes Clippy, 374 Tests (Debug und Release zusammen), alle Runner-Läufe einschließlich `scenario_industry.toml` über 50.000 Ticks mit `--verify-determinism --verify-save-load --profile-phases --worst-ticks 10 --max-step-allocs 0 --budget-p99-us 10000`. Die Messungen stehen in `BENCHMARKS.md` („Etappe 6“).
+
+0. **Schritt 0**
+   - **Hysterese im Snapshot:** Die Markierung war bereits gespeichert und gehasht, weil sie im Flag-Byte der Kachel liegt (Kachel-Diff im Snapshot, Kachel-Hash). Gefehlt hat sie nur im `debug_dump`, der jetzt `impassable=` zeigt. Eine Migration war nicht nötig.
+     - Test `hysteresis_markers_survive_save_and_load`: Kacheln im Zwischenbereich in beiden Zuständen (Wasser Stand 3 steigend/fallend, Temperatur 75 steigend/fallend). Nach Save/Load sind Hash und Passierbarkeit jeder Kachel gleich, danach 1.000 identische Ticks.
+     - Neue AGENTS-Regel: Schwellen- und Hysteresezustände sind gespeicherter Zustand.
+   - **`--repeat`:**
+     - Funktionsweise: N Läufe, Vergleich Tick für Tick. Reproduzierbar ist ein Ausreißer, wenn er in mindestens N−1 Läufen über Faktor × Median liegt; einmalige werden als „vermutlich Rauschen“ gemeldet. `--worst-ticks` nutzt dann den Median pro Tick.
+     - Test: absichtlich teurer Tick 300 wird als reproduzierbar erkannt, ein nur in einem Lauf verlangsamter Tick als einmalig.
+     - Ergebnis für den 17-ms-Tick 4.291 aus `flood`: in keinem von 5 Läufen auffällig, also Rauschen.
+1. **Inhaltssystem**
+   - **`sim-core::content`, domänenneutral:**
+     - Ebenen in fester Reihenfolge (Basis, dann Mods), Dateien nach Pfad sortiert.
+     - Merge: Hinzufügen frei, Ersetzen nur mit `override = true`; ein Override ohne Ziel ist ein Fehler.
+     - Dichte Indizes nach sortierter String-ID; Gleitkommazahlen sind verboten.
+     - Typisierte Registries, Fehler mit Datei, Art, ID und Schlüsselpfad, Zyklensuche, kanonischer Fingerabdruck ohne Herkunft und Override-Marker.
+   - **Tests:** Dateireihenfolge ändert weder Indizes noch Fingerabdruck; Override mit und ohne Markierung; eine Fehlermeldung pro Fehlerart; der Fingerabdruck ändert sich bei jeder inhaltlichen Änderung, nicht beim Verschieben zwischen Dateien.
+   - **`fortress-sim`:** Die Basis liegt in `games/fortress-sim/content/base/` und ist eingebettet; ein Test vergleicht sie mit dem Verzeichnis.
+     - Rollen werden beim Laden aufgelöst: Boden, Schichten nach `stratum`, Adern nach `vein`, Aquifer, Obsidian, Nahrung, Stein, Saat, Brennstoff, Ration.
+     - Geprüft werden Schmelzketten und Kategorie-Hierarchie auf Zyklen.
+     - Mods kommen aus `config.mods`. Der Fingerabdruck fließt in `content_fingerprint` und in den Snapshot. Ein Replay mit geändertem Mod wird abgelehnt („content fingerprint differs“, Runner-Test), ebenso ein Snapshot („Inhalt geändert“).
+   - **Beispiel-Mods** (Test-Fixtures):
+     - `tests/fixtures/mods/marble/marble.toml` fügt das Material `marble` und das Rezept `marble_table` hinzu.
+     - `faster_smelting` überschreibt `smelt_ore` mit `override = true`.
+   - **Warenketten** (alle in `recipes.toml`): Holz → Holzkohle (Köhlerei); Erz + Holzkohle → Barren (Schmelze, Material über `smelts_into`); Barren → Spitzhacke/Axt/Schwert (Schmiede); Stein → Blöcke → Tisch/Stuhl (Steinmetz); Ernte → Eintopf (Küche, nur rohe Zutaten); Holz → Bett/Tisch/Stuhl/Truhe/Fass (Schreiner). Truhe und Fass sind Behälter, das Fass dient auch dem Sammeltransport.
+2. **Industrie-Szenario** (`data/scenario_industry.toml`)
+   - **Ablauf:** Die Bewohner fällen den Westen, graben einen Tunnel mit Treppe zu einer Erzgalerie, bauen sechs Werkstätten, legen Gersten- und Pilzfelder an und erhalten acht Aufträge.
+   - **Ergebnis nach 50.000 Ticks:**
+     - 14 Werkzeuge, alle bis Tick 20.000.
+     - Nahrung 42,4 erzeugt gegen 22,4 verbraucht pro 1.000 Ticks; ohne Karawane 28,4 gegen 20,8, keine Hungertoten.
+     - Job-Latenzen p50/p95 je Art, siehe `BENCHMARKS.md`.
+     - 92 % der Bewohner sind untätig: Begrenzend sind Erz und Bäume, nicht die Arbeit.
+   - **Szenario-Ziel als Test** (ohne Karawane, 20.000 Ticks): mindestens 12 Werkzeuge, keine Hungertoten, Nahrungsvorrat ≥ 100 und wachsend, Nahrung erzeugt > verbraucht.
+   - **Golden Hash** (3.000 Ticks, mit Shuffle-Test): `0xb72c4d5a769a11a5`.
+3. **Gegenstands-Sweep:**
+   - Von 229 auf 200.000 Gegenstände: TPS 4.192 → 3.840, p99 394 → 443 µs.
+   - Index-Abfragen bleiben bei 1,01 Kandidaten und rund 3 Zellen; offene Transporte bleiben bei 64.
+   - Mit der Gegenstandszahl wächst nur der Transportplaner (`lifecycle` 4 % → 17 %). Er besucht pro Tick nur die fälligen Indizes.
+4. **Verklemmungsfreie atomare Reservierung:** `sim_core::jobs::GroupClaims` vergibt Gruppen nach (Priorität, Distanz, Halter, Schlüssel); eine Gruppe bekommt alle Schlüssel oder keinen (`Reservations::reserve_all`).
+   - **sim-core-Test:** 50 Zufallsfälle × 6 Sammelreihenfolgen. Nie wird ein Teil einer Gruppe gehalten, das Ergebnis hängt nicht von der Reihenfolge ab.
+   - **Fortress-Test `atomic_reservation_lets_exactly_one_workshop_start_without_deadlock`:** zwei Schmelzen, Zutaten für eine.
+     - Genau eine startet, in jedem Tick hält niemand nur einen Teil der Zutaten.
+     - Die erste wird fertig; die zweite wartet als Auftrag.
+     - Sobald neue Zutaten liegen, startet und endet die zweite. Ergebnis: 2 Eisenbarren, je 2 Erz und Holzkohle verbraucht.
+   - **Sammeltransporte** reservieren Fass, Gegenstände und Ziel ebenfalls als eine Gruppe.
+5. **Goldens und Versionen**
+   - **Neue Fortress-Golden-Hashes:**
+     - A* `0xd80b08289b0dff3b`, hierarchisch `0xebcf2633d7875684`
+     - `flood` `0xb41b346373005396`, `magma` `0x609ebddfbdcdd4fd`, `cavein` `0x81da5b63db25a4cc`, `industry` `0xb72c4d5a769a11a5`
+   - **Golden Snapshot** `fortress-v4-small.bin`: `0x67a03d5dfb04d251` bei Tick 300, `0x082f9d656bf9ef2d` bei Tick 601.
+   - **Snapshot-Version 4** (Nutzlast `FORTSNP4` mit Inhalts-Fingerabdruck), `GENERATOR_VERSION` 3.
+   - **Begründung:**
+     - Materialindizes folgen jetzt der sortierten String-ID.
+     - Neue Zustände: Stapel, Behälter, Mengenbuch, Pflanzen, Felder, Werkstätten, Aufträge, Zonen, Fähigkeiten.
+     - Neue Hash-Untereinheiten `plants` und `industry`.
+   - **Snapshots v1–v3** sind ein dokumentierter Bruch (abgelehnt mit „Weltgenerator geändert: Version 2 → 3“), weil sich Generator und Materialnummerierung geändert haben.
+   - **Unverändert:** Jungle `0x5317cfd6e2e12024` (Tick 1.000) und `0x19eb3e87d333006d` (Tick 5.000), Dummy `0x20f21cbeee53c309` (CI).
+6. **Gefundene und behobene Fehler**
+   - Säen: Die Pflanze entstand erst am Tick-Ende, die Feldverwaltung legte im selben Tick schon einen neuen Säjob an. Folge war eine Endlosschleife (1.932 Abbrüche).
+   - Haul-Jobs ohne Ziel belegten das Prüflimit der Zuteilung; ein entfernter Grabjob wurde nie geprüft (Flut-Test). Jetzt werden sie verworfen und später neu angelegt.
+   - Der Radius des Sammeltransports wurde in Wegkosten- statt in Kacheleinheiten verglichen.
+   - Drei Stämme eines gefällten Baums auf einem Lagerplatz landeten auf demselben Ausweichplatz.
+   - Ein Sammeltransport stellte sein Fass auf einen Platz, auf dem schon ein Fass stand.
+   - Im Industrie-Szenario lag die Treppe im Tunnel-Grabauftrag und wurde abgelehnt.
+   - Beim Laden wurden vorreservierte Puffer ersetzt; der erste Command danach allokierte im Step. Gefunden über `ci.sh`, Regressionstest ergänzt.
+   - Zwei Leistungseinbrüche (Sortieren aller Gegenstandspositionen, Behälter-Suche pro Lagerplatz), behoben ohne Verhaltensänderung.
+   - Aus Etappe 5: Die Tasten F6–F8 der Physik-Overlays waren im Viewer nie gebunden.
+7. **Entscheidungen und Abweichungen**
+   - **String-IDs in Commands:** Commands tragen String-IDs (Rezept, Werkstattart, Feldfrucht, Filter), damit Szenarien lesbar bleiben. Sie werden beim Anwenden des Commands einmal per Binärsuche aufgelöst; Regeln arbeiten nur mit Indizes. Deshalb ist `FortressCommand` nicht mehr `Copy`.
+   - **Umnummerierung:** Die Materialien ließen sich nicht ohne Hash-Änderung verschieben, weil die Indizes nach String-ID sortiert sein müssen. Nachweis der reinen Umnummerierung: Nach Rückübersetzung der Nummern über die Namen waren die Debug-Dumps bei Tick 2.000 identisch, abgesehen vom neuen Material der Rationen.
+   - **Pflanzen:** Bäume und Feldfrüchte sind Entitäten auf einer Kachel und blockieren nicht; die Topologie ändert sich durch Wachstum nicht. Bäume werden beim Embark außerhalb des Bergs gesetzt und wachsen nicht nach.
+   - **Felder:** Unterirdische Felder liegen unter der Oberflächenhöhe, oberirdische auf ihr; Boden aus Fels ist erlaubt.
+   - **Säen** verbraucht eine Saateinheit beim Aufnehmen. Ein Abbruch legt sie wieder ab. Mengen werden so ohne Teilstapel erhalten.
+   - **Werkstätten:** quadratische Grundfläche, Eingabe an der Ecke, Arbeit in der Mitte, Ausgabe an der Gegenecke; Bau wie ein Rezept ohne Produkt. Zutaten trägt der Produktionsjob selbst; es gibt keine eigenen Transport-Jobs zu Werkstätten.
+   - **Fähigkeiten:** Stufen aus Erfahrungsschwellen. Arbeitszeit × 5/(5 + Stufe); Qualität = Stufe (höchstens 5). Abnutzung ist als Feld vorhanden, wird aber noch nicht verbraucht.
+   - **Lagerzonen:** Jede Designation ist eine Zone. Filter nach Kategorie (mit Unterkategorien) und bis zu 8 Materialien, Priorität 1–9, Behälteroption. Ein Lagerplatz trägt weiterhin einen Gegenstand (auch einen Behälter mit Inhalt). Umlagern nur in höhere Priorität.
+   - **Transport:** Planer gestaffelt pro Gegenstand, höchstens 16 neue und 64 offene Transport-Jobs (Config).
+   - **Sammeltransport:** nur mit leerem Bulk-Behälter in 12 Kacheln Umkreis und mindestens einem weiteren Gegenstand; das Fass bleibt mit Inhalt im Lager.
+   - **Kategorie-Index:** Er wurde erweitert, nicht neu gebaut (Mehrfachkategorien, Kandidatenlimit, Abfrage pro Kachel). Behälterinhalte zählen am Behälterort. Die Erreichbarkeit wird pro Kandidat geprüft, nicht über Regionen pro Zelle.
+   - **Karawane:** bleibt standardmäßig an, damit die bisherigen Szenarien unverändert versorgt sind; ohne sie trägt sich die Industrie.
+   - **Dig-Schwellen:** Mit dem bedarfsgesteuerten Transport gräbt `dig_in` in 2.000 Ticks 426 statt mindestens 450 Kacheln (hierarchisch); die Testschwelle steht jetzt bei 420.
+   - **Viewer:** Werkzeuge K/H/T, Aufträge O/R/X, Zonenfilter L/P, Panel mit Werkstatt, Zone, Pflanzen und Gegenständen samt Behälterinhalt, Overlay F10 für Felder und Bäume. Die Bedienung ist bewusst tastaturgetrieben statt mit Dialogen.

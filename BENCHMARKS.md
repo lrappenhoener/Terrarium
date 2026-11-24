@@ -305,3 +305,57 @@ Nachprüfung des 17-ms-Ticks aus Etappe 5 (24.11.2026, `zen`, `scenario_flood.to
   - Tick 1 (1,58 ms, Wegsuche beim Start),
   - 22 Ticks mit 0,76–1,18 ms, davon 0,54–0,75 ms in `connectivity`: Flood-Fill der Regionen, wenn Wasser eine Schwelle überschreitet und die Topologie ändert,
   - 3 Ticks um 0,6 ms mit Wegsuchen (`path` ≈ 0,3 ms).
+
+## Etappe 6 – Wirtschaft, Inhalte, Transport
+
+Gemessen am 24.11.2026 auf `zen` (AMD Ryzen 7 9800X3D), Rust 1.97.1, Release-Profil, Seed 42, Mediane aus 3 Läufen, Stand `ae2b8c7`.
+
+| Szenario | Ticks | TPS | p50 µs | p99 µs | Max µs | größte Phasen | End-Hash |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `industry` | 50.000 | 5.455 | 191,92 | 301,30 | 5.362 | fluids 78 %, job_assign 17 %, lifecycle 1 % | `0xfb6fa80d29eb9491` |
+| `dig_in` | 20.000 | 4.061 | 236,12 | 585,77 | 5.178 | fluids 68 %, lifecycle 19 %, job_assign 7 % | `0x986a1b0881dabb79` |
+| `flood` | 20.000 | 4.238 | 191,61 | 650,73 | 3.537 | fluids 84 %, job_assign 5 %, lifecycle 5 % | `0x67add9d87375c9c2` |
+| `magma` | 20.000 | 1.922 | 549,32 | 996,09 | 5.802 | temperature 57 %, fluids 35 % | `0x83b17a5c24fd81d0` |
+| `cavein` | 20.000 | 5.569 | 184,06 | 295,32 | 6.680 | fluids 84 %, lifecycle 6 % | `0x57382f7e7c116d68` |
+
+Gegenüber Etappe 5 (`dig_in` 4.413 TPS, p99 626 µs) kostet die Wirtschaft im Standardszenario 8 % TPS; p99 sinkt leicht. Auf dem Weg dorthin gab es zwei Einbrüche, beide behoben: Die Arbeitsphase sortierte jede Runde alle Gegenstandspositionen (bei 200.000 Gegenständen 335 TPS), und Planer und Zuteilung suchten per Index-Scan nach Behältern auf jedem belegten Lagerplatz (`dig_in` 1.934 TPS, `lifecycle` 49 %). Beide Korrekturen sind verhaltensneutral (identische Debug-Dumps nach 6.000 Ticks).
+
+`--max-step-allocs 0` und `--budget-p99-us 10000` gelten für alle Szenarien; `industry` läuft in `scripts/ci.sh` mit Determinismus- und Save/Load-Prüfung über 50.000 Ticks.
+
+### Industrie-Szenario (50.000 Ticks, Standardkonfiguration, Lauf 1)
+
+- **Bestand am Ende:** 14 Werkzeuge (8 Spitzhacken, 6 Äxte), 12 Barren, 32 Holzkohle, 20 Blöcke, 4 Fässer, 4 Betten; 446 hergestellte Einheiten.
+- **Produktion pro 1.000 Ticks:** Nahrung 42,4 (Verbrauch 22,4), Holzkohle 1,44, Barren 0,52, Stämme 1,32, Blöcke 0,40, Werkzeug 0,28.
+- **Untätige Bewohner:** 92 %. Die Kette ist durch Erz (rund 30 Erzkacheln) und Bäume (22 gefällt) begrenzt, nicht durch Arbeitskraft.
+- **Job-Latenz p50/p95 in Ticks:**
+
+  | Job-Art | p50 | p95 |
+  | --- | ---: | ---: |
+  | Graben | 313 | 1.424 |
+  | Transport | 63 | 10.014 |
+  | Produktion | 83 | 176 |
+  | Werkstattbau | 267 | 293 |
+  | Säen | 2.038 | 10.370 |
+  | Ernten | 18 | 49 |
+  | Fällen | 80 | 16.640 |
+
+  Die langen p95-Werte von Transport, Säen und Fällen sind Wartezeiten: Transport-Jobs entstehen erst, wenn ein Ziel frei wird; Sä-Jobs warten auf Saatgut und Jahreszeit; die Fäll-Designation zu Tick 0 umfasst den ganzen Westen.
+- **Transport:** durchschnittlich 172,5 Distanzeinheiten (Wegkosten, etwa 17 Kacheln), offene Transport-Jobs gedeckelt bei 64, 3 Sammeltransporte in Fässern.
+- **Kategorie-Index:** 550.312 Abfragen, im Mittel 0,10 Zellen und 1,02 Kandidaten pro Abfrage.
+
+Ohne Karawane (`caravan = false`, Test `the_industry_makes_tools_and_feeds_itself_without_caravans`): 14 Werkzeuge bis Tick 20.000, Nahrung 28,4 erzeugt gegen 20,8 verbraucht pro 1.000 Ticks (50.000 Ticks), Vorrat wächst von 161 (Tick 20.000) auf 391 (Tick 40.000), keine Hungertoten.
+
+### Gegenstands-Sweep (`scenario_industry.toml`, 3.000 Ticks, `max_items=260000`, Median aus 3)
+
+| `initial_stock_items` | TPS | p99 µs | `lifecycle` Anteil | `lifecycle` p99 µs | `job_assign` Anteil | Kandidaten/Abfrage | Zellen/Abfrage | offene Transporte | Ø Transportdistanz |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 4.192 | 394 | 4,3 % | 54 | 24,6 % | 1,01 | 1,23 | 44 | 161 |
+| 10.000 | 4.031 | 464 | 5,0 % | 82 | 24,1 % | 1,01 | 3,08 | 64 | 126 |
+| 50.000 | 4.153 | 429 | 7,6 % | 80 | 21,5 % | 1,01 | 2,98 | 64 | 114 |
+| 200.000 | 3.840 | 443 | 17,3 % | 169 | 20,2 % | 1,01 | 2,98 | 64 | 114 |
+
+Bei 870-mal mehr Gegenständen sinkt der Durchsatz um 8 %, p99 steigt um 12 %. Index-Abfragen bleiben bei einem Kandidaten, weil sie in der nächsten Zelle enden. Die Transport-Jobs bleiben bei 64 gedeckelt, statt pro Gegenstand zu wachsen. Was mit der Gegenstandszahl wächst, ist der Transportplaner in `lifecycle`: Er besucht pro Tick `max_items / haul_scan_interval` Indizes (bei 260.000 also rund 4.000) und prüft für fällige Gegenstände Ziele.
+
+### `--repeat` auf dem neuen Stand
+
+`flood`, 20.000 Ticks, `--repeat 5`: Median-Tick 192–196 µs, p99 599–668 µs; 138 reproduzierbare und 737 einmalige Ausreißer. Die reproduzierbaren sind der Start-Tick 1 (2,1 ms) und Flood-Fills in `connectivity` (≈1,1 ms).
