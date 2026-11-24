@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install viewer system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libgl1-mesa-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo test --workspace --release
+      - name: Determinism runs with hash dumps
+        run: |
+          mkdir -p hashes
+          runner=(cargo run --release -p sim-runner --)
+          "${runner[@]}" --game dummy --ticks 5000 --verify-determinism --dump-hashes hashes/dummy.csv
+          "${runner[@]}" --game jungle --ticks 5000 --verify-determinism --dump-hashes hashes/jungle.csv
+          "${runner[@]}" --game fortress --ticks 20000 \
+            --commands games/fortress-sim/data/scenario_dig_in.toml \
+            --verify-determinism --verify-save-load --dump-hashes hashes/fortress.csv
+          "${runner[@]}" --game fortress --ticks 5000 \
+            --commands games/fortress-sim/data/scenario_dig_in.toml --set 'pathfinding="hierarchical"' \
+            --verify-determinism --dump-hashes hashes/fortress-hierarchical.csv
+          grep -Fx '1000,0x5317cfd6e2e12024' hashes/jungle.csv
+          grep -Fx '5000,0x19eb3e87d333006d' hashes/jungle.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.os }}
+          path: hashes/
+
+  compare-hashes:
+    name: cross-platform hash comparison
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Compare hash dumps of all platforms
+        run: |
+          status=0
+          reference=artifacts/hashes-ubuntu-latest
+          for other in artifacts/hashes-windows-latest artifacts/hashes-macos-latest; do
+            for file in "$reference"/*.csv; do
+              name=$(basename "$file")
+              if ! cmp -s "$file" "$other/$name"; then
+                echo "::error::$name differs between ubuntu-latest and $(basename "$other")"
+                diff "$file" "$other/$name" | head -20 || true
+                status=1
+              fi
+            done
+          done
+          exit "$status"
+
+  checked:
+    name: release-checked long runs
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Install viewer system libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libgl1-mesa-dev
+      - run: |
+          cargo run --profile release-checked -p sim-runner -- --game jungle --ticks 50000 --verify-determinism
+          cargo run --profile release-checked -p sim-runner -- --game fortress --ticks 20000 \
+            --commands games/fortress-sim/data/scenario_dig_in.toml --verify-determinism
