@@ -9,6 +9,7 @@ pub mod content;
 mod diagnostics;
 mod fluids;
 mod plants;
+mod production;
 mod render;
 mod snapshot;
 mod temperature;
@@ -24,7 +25,7 @@ pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
     index::{CategoryIndex, Limits},
-    jobs::{Assigner, JobBoard, JobId, JobState, Reservations, job_distance},
+    jobs::{Assigner, GroupClaims, JobBoard, JobId, JobState, Reservations, job_distance},
     path::{
         AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
         SearchOutcome,
@@ -41,7 +42,7 @@ use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
 use types::{
     Death, Event, FarmPlot, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, Plant, PlantId,
-    ResKey, Resident, ResidentId, Route, RouteStatus, Skills, Task, Vitals,
+    ResKey, Resident, ResidentId, Route, RouteStatus, Skills, Task, Vitals, Workshop,
 };
 
 const DIG_PRIORITY: i32 = 5;
@@ -60,6 +61,8 @@ pub(crate) const SOURCE_EVENT: u8 = 2;
 const SOURCE_STACK: u8 = 3;
 /// Highest item quality.
 pub(crate) const MAX_QUALITY: u8 = 5;
+/// Workshops per fortress.
+pub(crate) const MAX_WORKSHOPS: usize = 1024;
 
 sim_core::entity_columns! {
     struct ResidentColumns, row ResidentRow {
@@ -112,6 +115,8 @@ pub(crate) struct Counters {
     pub felled: u64,
     pub harvested: u64,
     pub sown: u64,
+    pub crafted: u64,
+    pub workshops_built: u64,
 }
 
 sim_core::state_hash_struct!(Counters {
@@ -128,7 +133,9 @@ sim_core::state_hash_struct!(Counters {
     collapsed_tiles,
     felled,
     harvested,
-    sown
+    sown,
+    crafted,
+    workshops_built
 });
 
 /// Diagnostics excluded from hashes and snapshots.
@@ -225,6 +232,9 @@ pub struct FortressSim {
     plants: EntityTable<Plant>,
     pcols: PlantColumns,
     farms: Vec<FarmPlot>,
+    /// Workshops in ascending ID order.
+    workshops: Vec<Workshop>,
+    next_workshop: u32,
     fluid: ChunkedGrid3<u8>,
     fluid_active: ActiveChunkSet,
     balance: fluids::FluidBalance,
@@ -252,6 +262,11 @@ struct Scratch {
     chunks: Vec<ChunkId>,
     members: Vec<u32>,
     plant_ids: Vec<PlantId>,
+    ingredients: Vec<ItemId>,
+    used: Vec<ItemId>,
+    group_keys: Vec<ResKey>,
+    groups: GroupClaims<ResKey, ResidentId>,
+    group_wins: Vec<(ResidentId, bool)>,
     fluid_marks: Vec<bool>,
     fluid_changed: Vec<ChunkId>,
     fluid_chunks: Vec<ChunkId>,
@@ -297,6 +312,11 @@ impl Scratch {
             chunks: Vec::with_capacity(4096),
             members: Vec::with_capacity(256),
             plant_ids: Vec::with_capacity(config.max_plants as usize),
+            ingredients: Vec::with_capacity(production::MAX_JOB_ITEMS * 2),
+            used: Vec::with_capacity(production::MAX_JOB_ITEMS),
+            group_keys: Vec::with_capacity(production::MAX_JOB_ITEMS),
+            groups: GroupClaims::with_capacity(residents, residents * production::MAX_JOB_ITEMS),
+            group_wins: Vec::with_capacity(residents),
             fluid_marks: vec![false; chunk_count * 2],
             fluid_changed: Vec::with_capacity(chunk_count * 2),
             fluid_chunks: Vec::with_capacity(chunk_count * 2),
@@ -470,6 +490,8 @@ impl FortressSim {
             plants: EntityTable::with_capacity(config.max_plants),
             pcols: PlantColumns::with_capacity(config.max_plants as usize),
             farms: Vec::with_capacity(config.max_farm_plots as usize),
+            workshops: Vec::with_capacity(MAX_WORKSHOPS),
+            next_workshop: 0,
             seed,
             tick: 0,
             connectivity,
@@ -1004,6 +1026,20 @@ impl FortressSim {
                 }
             }
             Task::Gather { plant, .. } => self.pslot(plant).map(|s| self.pcols.pos[s]),
+            Task::Craft {
+                workshop,
+                item,
+                stage,
+                ..
+            } => {
+                let w = self.workshops[self.workshop_index(workshop)?];
+                match stage {
+                    0 => self.item_ground(item?),
+                    1 => Some(self.input_tile(&w)),
+                    2 => Some(self.work_tile(&w)),
+                    _ => None,
+                }
+            }
             Task::Sow {
                 seed, plot, stage, ..
             } => {
@@ -1062,9 +1098,11 @@ impl FortressSim {
                 }
                 build_sites(&self.connectivity, job.pos)
             }
-            JobKind::Haul(_) | JobKind::Fell(_) | JobKind::Sow | JobKind::Harvest(_) => {
-                return None;
-            }
+            JobKind::Haul(_)
+            | JobKind::Fell(_)
+            | JobKind::Sow
+            | JobKind::Harvest(_)
+            | JobKind::Craft { .. } => return None,
         };
         sites
             .into_iter()
@@ -1186,6 +1224,7 @@ impl FortressSim {
                         }
                         // A slot holds at most one item, so stacked tiles are not designated.
                         if self.world.get(p).is_some_and(|t| standable(*t))
+                            && !self.is_workshop_tile(p)
                             && self.item_index.count_at(p, 2) < 2
                             && self.stockpiles.len() < STOCKPILE_CAPACITY
                         {
@@ -1238,6 +1277,15 @@ impl FortressSim {
                         .retain(|job| !(inside(job.pos) && !matches!(job.data, JobKind::Haul(_))));
                     self.stockpiles.retain(|&p| !inside(p));
                     self.farms.retain(|plot| !inside(plot.pos));
+                    self.workshops.retain(|w| !inside(w.pos));
+                    for i in 0..self.workshops.len() {
+                        if self.workshops[i]
+                            .job
+                            .is_some_and(|job| self.jobs.get(job).is_none())
+                        {
+                            self.workshops[i].job = None;
+                        }
+                    }
                     for slot in 0..self.pcols.len() {
                         if self.pcols.job[slot].is_some_and(|job| self.jobs.get(job).is_none()) {
                             self.pcols.job[slot] = None;
@@ -1266,6 +1314,15 @@ impl FortressSim {
                 }
                 FortressCommand::DesignateFelling { from, to } => {
                     if self.designate_felling(from, to) == 0 {
+                        self.counters.invalid_designations += 1;
+                    }
+                }
+                FortressCommand::PlaceWorkshop { ref kind, pos } => {
+                    let placed =
+                        GameContent::id_of(&self.content.ids.workshops, kind).is_some_and(|k| {
+                            self.workshops.len() < MAX_WORKSHOPS && self.place_workshop(k, pos)
+                        });
+                    if !placed {
                         self.counters.invalid_designations += 1;
                     }
                 }
@@ -1414,6 +1471,7 @@ impl FortressSim {
                 JobKind::Fell(_) | JobKind::Harvest(_) | JobKind::Sow => {
                     connectivity.is_standable(job.pos)
                 }
+                JobKind::Craft { .. } => connectivity.is_standable(job.pos),
             });
         }
         let mut assigner = std::mem::take(&mut self.scratch.assigner);
@@ -1426,9 +1484,11 @@ impl FortressSim {
             |_, at, job| match job.data {
                 JobKind::Dig(_) => self.best_site(at, job.id).is_some(),
                 JobKind::Build(_) => stones && self.best_site(at, job.id).is_some(),
-                JobKind::Haul(_) | JobKind::Fell(_) | JobKind::Harvest(_) | JobKind::Sow => {
-                    self.connectivity.reachable(at, job.pos)
-                }
+                JobKind::Haul(_)
+                | JobKind::Fell(_)
+                | JobKind::Harvest(_)
+                | JobKind::Sow
+                | JobKind::Craft { .. } => self.connectivity.reachable(at, job.pos),
             },
             |job, distance| {
                 let clearing = matches!(job.data, JobKind::Haul(_))
@@ -1453,6 +1513,26 @@ impl FortressSim {
             let task = match job.data {
                 JobKind::Fell(plant) | JobKind::Harvest(plant) => {
                     Some(Task::Gather { job: job_id, plant })
+                }
+                JobKind::Craft { workshop, recipe } => {
+                    let mut items = std::mem::take(&mut self.scratch.ingredients);
+                    let planned = self.plan_ingredients(workshop, recipe, &mut items);
+                    let mut keys = std::mem::take(&mut self.scratch.group_keys);
+                    keys.clear();
+                    keys.extend(items.iter().map(|&item| ResKey::Item(item)));
+                    let pushed = planned
+                        && self
+                            .scratch
+                            .groups
+                            .push(worker, priority, job_distance(at, pos), &keys);
+                    self.scratch.group_keys = keys;
+                    self.scratch.ingredients = items;
+                    pushed.then_some(Task::Craft {
+                        job: job_id,
+                        workshop,
+                        item: None,
+                        stage: production::PLAN,
+                    })
                 }
                 JobKind::Sow => self.seed_input(pos).and_then(|input| {
                     let (distance, seed) = self.nearest_item(at, &input, None, &[])?;
@@ -1513,13 +1593,27 @@ impl FortressSim {
         self.reservations.resolve(self.tick, |claim, won| {
             outcomes.push((claim.holder, claim.key, won));
         });
+        // Ingredient groups after single claims: a group wins all its items or none.
+        let mut wins = std::mem::take(&mut self.scratch.group_wins);
+        wins.clear();
+        self.scratch
+            .groups
+            .resolve(&mut self.reservations, self.tick, |holder, won| {
+                wins.push((holder, won));
+            });
+        wins.sort_unstable();
         // A task starts only if all of its claims were granted.
         outcomes.sort_unstable_by_key(|&(holder, key, won)| (holder, won, key));
         for i in 0..self.scratch.pending.len() {
             let (worker, task) = self.scratch.pending[i];
             let start = outcomes.partition_point(|&(holder, _, _)| holder < worker);
             let end = outcomes.partition_point(|&(holder, _, _)| holder <= worker);
-            let all_won = outcomes[start..end].iter().all(|&(_, _, won)| won);
+            let craft = matches!(task, Task::Craft { .. });
+            let all_won = if craft {
+                wins.binary_search(&(worker, true)).is_ok()
+            } else {
+                outcomes[start..end].iter().all(|&(_, _, won)| won)
+            };
             if all_won
                 && let (Some(job), Some(slot)) = (task.job(), self.rslot(worker))
                 && self.jobs.claim(job, worker, self.tick)
@@ -1529,12 +1623,16 @@ impl FortressSim {
                 self.rcols.work[slot] = 0;
                 continue;
             }
+            if craft && all_won {
+                self.reservations.release_holder(worker);
+            }
             for &(_, key, won) in &outcomes[start..end] {
                 if won {
                     self.reservations.release(key);
                 }
             }
         }
+        self.scratch.group_wins = wins;
         self.scratch.outcomes = outcomes;
         self.scratch.assignments = assignments;
         self.scratch.assigner = assigner;
@@ -1730,6 +1828,11 @@ impl FortressSim {
                 }
                 Task::Sow { .. } => {
                     if self.work_sow(slot, id, task) {
+                        self.release_and_idle(slot, id);
+                    }
+                }
+                Task::Craft { .. } => {
+                    if self.work_craft(slot, id, task) {
                         self.release_and_idle(slot, id);
                     }
                 }
@@ -2004,9 +2107,13 @@ impl FortressSim {
         let world = &self.world;
         let plants = &self.plants;
         let farms = &self.farms;
+        let workshops = &self.workshops;
         self.jobs.retain(|job| match (job.state, job.data) {
             (JobState::Done, _) => false,
             (JobState::Open, JobKind::Fell(p) | JobKind::Harvest(p)) => plants.is_alive(p),
+            (_, JobKind::Craft { workshop, .. }) => {
+                workshops.binary_search_by_key(&workshop, |w| w.id).is_ok()
+            }
             (JobState::Open, JobKind::Sow) => {
                 farms.binary_search_by_key(&job.pos, |f| f.pos).is_ok()
             }

@@ -35,7 +35,7 @@ pub(crate) const BASE: [(&str, &str); 7] = [
 pub const SEASONS: [&str; 4] = ["spring", "summer", "autumn", "winter"];
 /// Upper bounds that keep per-item and per-recipe work bounded.
 const MAX_CATEGORIES: usize = 64;
-const MAX_INPUTS: usize = 4;
+pub(crate) const MAX_INPUTS: usize = 4;
 pub(crate) const MAX_SKILLS: usize = 16;
 
 fn four() -> i32 {

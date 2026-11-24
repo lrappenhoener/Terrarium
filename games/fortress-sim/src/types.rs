@@ -29,6 +29,25 @@ impl StateHash for Skills {
     }
 }
 
+/// A workshop: content kind, footprint corner, construction state and current job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workshop {
+    /// Stable, never reused.
+    pub id: u32,
+    pub kind: u16,
+    pub pos: Pos3,
+    pub built: bool,
+    pub job: Option<JobId>,
+}
+
+sim_core::state_hash_struct!(Workshop {
+    id,
+    kind,
+    pos,
+    built,
+    job
+});
+
 /// A designated farm tile with its crop, current plant and pending job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FarmPlot {
@@ -120,6 +139,11 @@ pub enum JobKind {
     /// Sow the farm plot at the job position.
     Sow,
     Harvest(PlantId),
+    /// Build a workshop (`recipe` none) or run a recipe in it.
+    Craft {
+        workshop: u32,
+        recipe: Option<u16>,
+    },
 }
 
 impl StateHash for JobKind {
@@ -145,6 +169,10 @@ impl StateHash for JobKind {
             Self::Harvest(plant) => {
                 hash.write_u8(5);
                 plant.state_hash(hash);
+            }
+            Self::Craft { workshop, recipe } => {
+                hash.write_u8(6);
+                (workshop, recipe).state_hash(hash);
             }
         }
     }
@@ -230,6 +258,14 @@ pub enum Task {
         plot: Pos3,
         stage: u8,
     },
+    /// Workshop job: stage 0 fetches `item`, stage 1 carries it to the input tile,
+    /// stage 2 works, stage 3 plans the next step. All ingredients are reserved.
+    Craft {
+        job: JobId,
+        workshop: u32,
+        item: Option<ItemId>,
+        stage: u8,
+    },
 }
 
 impl Task {
@@ -239,7 +275,8 @@ impl Task {
             | Self::Haul { job, .. }
             | Self::Build { job, .. }
             | Self::Gather { job, .. }
-            | Self::Sow { job, .. } => Some(job),
+            | Self::Sow { job, .. }
+            | Self::Craft { job, .. } => Some(job),
             _ => None,
         }
     }
@@ -252,6 +289,7 @@ impl Task {
             }
             (Self::Build { item, .. }, ResKey::Item(other)) => item == other,
             (Self::Sow { seed, stage: 0, .. }, ResKey::Item(other)) => seed == other,
+            (Self::Craft { .. }, ResKey::Item(_)) => true,
             _ => false,
         }
     }
@@ -267,6 +305,7 @@ impl Task {
             Self::Flee { .. } => "flee",
             Self::Gather { .. } => "gather",
             Self::Sow { .. } => "sow",
+            Self::Craft { .. } => "craft",
         }
     }
 }
@@ -319,6 +358,15 @@ impl StateHash for Task {
             } => {
                 hash.write_u8(8);
                 (job, seed, plot, stage).state_hash(hash);
+            }
+            Self::Craft {
+                job,
+                workshop,
+                item,
+                stage,
+            } => {
+                hash.write_u8(9);
+                (job, workshop, item, stage).state_hash(hash);
             }
         }
     }
@@ -444,5 +492,10 @@ pub enum FortressCommand {
     DesignateFelling {
         from: Pos3,
         to: Pos3,
+    },
+    /// A workshop of content kind `kind` with its footprint corner at `pos`.
+    PlaceWorkshop {
+        kind: String,
+        pos: Pos3,
     },
 }

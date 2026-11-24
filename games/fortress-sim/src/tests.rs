@@ -187,7 +187,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0xa62560054824a387;
+const GOLDEN_ASTAR: u64 = 0xca5793715dd6af72;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -472,11 +472,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x626ca1d131b6f458);
+    assert_eq!(sim.state_hash(), 0x86847fca4a582936);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x23e4807fcdc2efef);
+    assert_eq!(sim.state_hash(), 0x8636010e121f62d0);
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x5bc1abc6b08b6d87;
+const GOLDEN_HIERARCHICAL: u64 = 0x30c0131be75483cc;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -813,9 +813,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0x9dc13bd1db2af9b5;
-const GOLDEN_MAGMA: u64 = 0x0b05a5bea0ac819b;
-const GOLDEN_CAVEIN: u64 = 0x74b6105de4413efa;
+const GOLDEN_FLOOD: u64 = 0x6da812e2c3b92df9;
+const GOLDEN_MAGMA: u64 = 0x84d2c9a748795644;
+const GOLDEN_CAVEIN: u64 = 0x1ecf31dff554b3c9;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -1453,4 +1453,156 @@ fn surface_crops_do_not_grow_in_winter() {
         sim.step(&[]);
     }
     assert!(sim.pcols.growth[sim.pslot(plant).unwrap()] >= 450);
+}
+
+fn ready_workshop(sim: &mut FortressSim, kind: &str, pos: Pos3) -> u32 {
+    let k = GameContent::id_of(&sim.content.ids.workshops, kind).unwrap();
+    assert!(sim.place_workshop(k, pos));
+    let w = sim.workshops.last().copied().unwrap();
+    sim.jobs.remove(w.job.unwrap());
+    let i = sim.workshop_index(w.id).unwrap();
+    sim.workshops[i].job = None;
+    sim.workshops[i].built = true;
+    w.id
+}
+
+fn holds_items(sim: &FortressSim, id: ResidentId) -> usize {
+    sim.reservations
+        .iter()
+        .filter(|r| r.holder == id && matches!(r.key, ResKey::Item(_)))
+        .count()
+}
+
+#[test]
+fn atomic_reservation_lets_exactly_one_workshop_start_without_deadlock() {
+    let mut sim = flat(calm());
+    let first = ready_workshop(&mut sim, "smelter", Pos3::new(4, 4, 1));
+    let second = ready_workshop(&mut sim, "smelter", Pos3::new(12, 4, 1));
+    let smelt = GameContent::id_of(&sim.content.ids.recipes, "smelt_ore").unwrap();
+    let iron_ore = GameContent::id_of(&sim.content.ids.materials, "iron_ore").unwrap();
+    let oak = GameContent::id_of(&sim.content.ids.materials, "oak_wood").unwrap();
+    let (ore, charcoal, bar) = (kind(&sim, "ore"), kind(&sim, "charcoal"), kind(&sim, "bar"));
+    sim.spawn_item(Pos3::new(8, 10, 1), ore, iron_ore, 1, 0);
+    sim.spawn_item(Pos3::new(8, 11, 1), charcoal, oak, 1, 0);
+    sim.add_craft_job(first, Some(smelt)).unwrap();
+    sim.add_craft_job(second, Some(smelt)).unwrap();
+    let crafting = |sim: &FortressSim| -> Vec<(ResidentId, u32)> {
+        sim.residents
+            .iter_by_id()
+            .filter_map(|id| match sim.rcols.task[sim.rslot(id).unwrap()] {
+                Task::Craft { workshop, .. } => Some((id, workshop)),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut started = false;
+    let mut done_at = None;
+    for tick in 0..2000 {
+        sim.step(&[]);
+        sim.check_invariants().unwrap();
+        let active = crafting(&sim);
+        assert!(active.len() <= 1, "only one workshop has ingredients");
+        for id in sim.residents.iter_by_id() {
+            let held = holds_items(&sim, id);
+            let working = active.iter().any(|&(r, _)| r == id);
+            assert!(
+                held == 0 || (working && held == 2),
+                "no partial reservations: {held}"
+            );
+        }
+        started |= !active.is_empty();
+        if sim.ledger[usize::from(bar.0)].produced == 1 {
+            done_at = Some(tick);
+            break;
+        }
+    }
+    assert!(started);
+    assert!(
+        done_at.is_some(),
+        "the first workshop finished: no deadlock"
+    );
+    let open = sim
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.data, JobKind::Craft { .. }) && j.state == JobState::Open)
+        .count();
+    assert_eq!(open, 1, "the second job waits for ingredients");
+    // New ingredients let the second workshop start and finish.
+    sim.spawn_item(Pos3::new(8, 10, 1), ore, iron_ore, 1, 0);
+    sim.spawn_item(Pos3::new(8, 11, 1), charcoal, oak, 1, 0);
+    for _ in 0..2000 {
+        sim.step(&[]);
+        if sim.ledger[usize::from(bar.0)].produced == 2 {
+            break;
+        }
+    }
+    sim.check_invariants().unwrap();
+    assert_eq!(sim.ledger[usize::from(bar.0)].produced, 2);
+    let iron = GameContent::id_of(&sim.content.ids.materials, "iron").unwrap();
+    for id in sim.items.iter_by_id() {
+        let slot = sim.islot(id).unwrap();
+        if sim.icols.kind[slot] == bar {
+            assert_eq!(
+                sim.icols.material[slot], iron,
+                "smelted ore yields iron bars"
+            );
+        }
+    }
+    assert_eq!(sim.ledger[usize::from(ore.0)].removed, 2);
+    assert_eq!(sim.ledger[usize::from(charcoal.0)].removed, 2);
+}
+
+#[test]
+fn placing_a_workshop_builds_it_from_stones() {
+    let mut sim = flat(calm());
+    let stone = kind(&sim, "stone");
+    for i in 0..3 {
+        sim.spawn_item(Pos3::new(2 + i, 9, 1), stone, 3, 1, 0);
+    }
+    sim.step(&[
+        FortressCommand::PlaceWorkshop {
+            kind: "mason".into(),
+            pos: Pos3::new(6, 6, 1),
+        },
+        FortressCommand::PlaceWorkshop {
+            kind: "mason".into(),
+            pos: Pos3::new(7, 7, 1),
+        },
+        FortressCommand::PlaceWorkshop {
+            kind: "palace".into(),
+            pos: Pos3::new(14, 14, 1),
+        },
+    ]);
+    assert_eq!(
+        sim.workshops.len(),
+        1,
+        "overlap and unknown kinds are rejected"
+    );
+    assert_eq!(sim.counters.invalid_designations, 2);
+    for _ in 0..1500 {
+        sim.step(&[]);
+        if sim.workshops[0].built {
+            break;
+        }
+    }
+    sim.check_invariants().unwrap();
+    assert!(sim.workshops[0].built);
+    assert_eq!(sim.counters.workshops_built, 1);
+    assert_eq!(
+        sim.ledger[usize::from(stone.0)].removed,
+        2,
+        "two stones were used"
+    );
+    // A built mason cuts blocks with the remaining stone.
+    let cut = GameContent::id_of(&sim.content.ids.recipes, "cut_blocks").unwrap();
+    let w = sim.workshops[0].id;
+    sim.add_craft_job(w, Some(cut)).unwrap();
+    for _ in 0..1500 {
+        sim.step(&[]);
+    }
+    sim.check_invariants().unwrap();
+    let block = kind(&sim, "block");
+    assert_eq!(sim.ledger[usize::from(block.0)].produced, 2);
+    let masonry = GameContent::id_of(&sim.content.ids.skills, "masonry").unwrap();
+    assert!((0..sim.rcols.len()).any(|s| sim.rcols.skills[s].0[usize::from(masonry)] > 0));
 }

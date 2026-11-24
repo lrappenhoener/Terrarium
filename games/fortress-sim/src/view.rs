@@ -45,6 +45,7 @@ pub enum JobOverlay {
     Haul,
     Fell,
     Farm,
+    Craft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +228,7 @@ impl View<'_> {
                     JobKind::Haul(_) => JobOverlay::Haul,
                     JobKind::Fell(_) => JobOverlay::Fell,
                     JobKind::Sow | JobKind::Harvest(_) => JobOverlay::Farm,
+                    JobKind::Craft { .. } => JobOverlay::Craft,
                 },
                 claimed_by,
             });

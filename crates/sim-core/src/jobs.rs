@@ -567,6 +567,34 @@ impl<K: Copy + Ord, H: Copy + Ord> Reservations<K, H> {
         self.claims.clear();
     }
 
+    /// Reserves all `keys` for `holder` if every key is free and unique and the
+    /// capacity suffices; otherwise reserves none.
+    pub fn reserve_all(&mut self, keys: &[K], holder: H, tick: u64) -> bool {
+        let unique = keys
+            .iter()
+            .enumerate()
+            .all(|(i, key)| !keys[..i].contains(key));
+        if !unique
+            || self.entries.len() + keys.len() > self.capacity
+            || keys.iter().any(|&key| self.is_reserved(key))
+        {
+            return false;
+        }
+        for &key in keys {
+            if let Err(at) = self.find(key) {
+                self.entries.insert(
+                    at,
+                    Reservation {
+                        key,
+                        holder,
+                        since: tick,
+                    },
+                );
+            }
+        }
+        true
+    }
+
     pub fn release(&mut self, key: K) -> bool {
         match self.find(key) {
             Ok(index) => {
@@ -618,6 +646,89 @@ impl<K: Copy + Ord, H: Copy + Ord> Reservations<K, H> {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Group<H> {
+    holder: H,
+    priority: i32,
+    distance: u32,
+    start: u32,
+    len: u32,
+}
+
+/// Claims on several keys that succeed together or not at all, for jobs that need
+/// several resources such as all ingredients of a recipe. No holder ever keeps a
+/// part of a group, so two jobs cannot block each other with halves.
+pub struct GroupClaims<K, H> {
+    groups: Vec<Group<H>>,
+    keys: Vec<K>,
+    order: Vec<usize>,
+}
+
+impl<K: Copy + Ord, H: Copy + Ord> GroupClaims<K, H> {
+    pub fn with_capacity(groups: usize, keys: usize) -> Self {
+        Self {
+            groups: Vec::with_capacity(groups),
+            keys: Vec::with_capacity(keys),
+            order: Vec::with_capacity(groups),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// Registers a group of keys; false if it is empty or the buffers are full.
+    pub fn push(&mut self, holder: H, priority: i32, distance: u32, keys: &[K]) -> bool {
+        if keys.is_empty()
+            || self.groups.len() == self.groups.capacity()
+            || self.keys.len() + keys.len() > self.keys.capacity()
+        {
+            return false;
+        }
+        self.groups.push(Group {
+            holder,
+            priority,
+            distance,
+            start: self.keys.len() as u32,
+            len: keys.len() as u32,
+        });
+        self.keys.extend_from_slice(keys);
+        true
+    }
+
+    /// Visits groups by descending priority, then ascending distance, holder and
+    /// keys, and reserves all keys of a group if none is taken, including by an
+    /// earlier group of this round. Reports each holder's outcome in that order; the
+    /// result does not depend on the order of `push` calls.
+    pub fn resolve(
+        &mut self,
+        reservations: &mut Reservations<K, H>,
+        tick: u64,
+        mut outcome: impl FnMut(H, bool),
+    ) {
+        let (groups, keys) = (&self.groups, &self.keys);
+        let slice = |g: &Group<H>| &keys[g.start as usize..(g.start + g.len) as usize];
+        self.order.clear();
+        self.order.extend(0..groups.len());
+        self.order.sort_unstable_by(|&a, &b| {
+            let (ga, gb) = (&groups[a], &groups[b]);
+            (Reverse(ga.priority), ga.distance, ga.holder, slice(ga)).cmp(&(
+                Reverse(gb.priority),
+                gb.distance,
+                gb.holder,
+                slice(gb),
+            ))
+        });
+        for &i in &self.order {
+            let group = groups[i];
+            let won = reservations.reserve_all(slice(&group), group.holder, tick);
+            outcome(group.holder, won);
+        }
+        self.groups.clear();
+        self.keys.clear();
     }
 }
 
@@ -839,5 +950,69 @@ mod tests {
         assert_eq!(restored.iter().cloned().collect::<Vec<_>>(), jobs);
         assert_eq!(restored.next_id(), 2);
         assert!(JobBoard::<u8, WorkerId>::restore(2, 8, 8, 2, 0, jobs).is_none());
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use crate::rng::{SystemRng, below};
+
+    #[test]
+    fn groups_win_all_keys_or_none_independent_of_order() {
+        for seed in 0..50u64 {
+            let mut rng = SystemRng::new(seed, 3);
+            let groups: Vec<(u32, i32, u32, Vec<u32>)> = (0..6u32)
+                .map(|holder| {
+                    let len = 1 + below(rng.next_u64(), 3) as usize;
+                    let keys = (0..len).map(|_| below(rng.next_u64(), 8) as u32).collect();
+                    (
+                        holder,
+                        below(rng.next_u64(), 2) as i32,
+                        below(rng.next_u64(), 5) as u32,
+                        keys,
+                    )
+                })
+                .collect();
+            let mut reference: Option<Vec<(u32, u32)>> = None;
+            for rotation in 0..groups.len() {
+                let mut reservations: Reservations<u32, u32> = Reservations::with_capacity(64);
+                reservations.reserve_all(&[7], 99, 0);
+                let mut claims = GroupClaims::with_capacity(16, 64);
+                let mut ordered = groups.clone();
+                ordered.rotate_left(rotation);
+                for (holder, priority, distance, keys) in &ordered {
+                    assert!(claims.push(*holder, *priority, *distance, keys));
+                }
+                let mut winners = Vec::new();
+                claims.resolve(&mut reservations, 1, |holder, won| {
+                    if won {
+                        winners.push(holder);
+                    }
+                });
+                for (holder, _, _, keys) in &groups {
+                    let held = keys
+                        .iter()
+                        .filter(|&&k| reservations.holder(k) == Some(*holder))
+                        .count();
+                    let unique = keys.iter().enumerate().all(|(i, k)| !keys[..i].contains(k));
+                    let expected = if winners.contains(holder) {
+                        keys.len()
+                    } else {
+                        0
+                    };
+                    assert_eq!(held, expected, "no partial groups");
+                    if winners.contains(holder) {
+                        assert!(unique && !keys.contains(&7));
+                    }
+                }
+                let state: Vec<(u32, u32)> =
+                    reservations.iter().map(|r| (r.key, r.holder)).collect();
+                match &reference {
+                    None => reference = Some(state),
+                    Some(expected) => assert_eq!(&state, expected, "order independent"),
+                }
+            }
+        }
     }
 }

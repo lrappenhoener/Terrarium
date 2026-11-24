@@ -154,7 +154,11 @@ impl FortressSim {
         }
     }
 
-    pub(crate) fn hashes(&self) -> [(&'static str, u64); 8] {
+    pub(crate) fn hashes(&self) -> [(&'static str, u64); 9] {
+        let mut industry = StateHasher::new();
+        self.workshops.state_hash(&mut industry);
+        industry.write_u32(self.next_workshop);
+
         let mut plants = StateHasher::new();
         self.plants.hash_state(&mut plants);
         plants.write_usize(self.plants.len());
@@ -257,6 +261,7 @@ impl FortressSim {
             ("fluids", fluids.finish()),
             ("heat", heat.finish()),
             ("plants", plants.finish()),
+            ("industry", industry.finish()),
         ]
     }
 
@@ -479,6 +484,28 @@ impl FortressSim {
                 return fail("plant references a missing job");
             }
         }
+        if self
+            .workshops
+            .windows(2)
+            .any(|pair| pair[0].id >= pair[1].id)
+            || self.workshops.iter().any(|w| w.id >= self.next_workshop)
+        {
+            return fail("workshops are not sorted by ID below the next ID");
+        }
+        for w in &self.workshops {
+            if self.content.workshops.get(usize::from(w.kind)).is_none() {
+                return fail("workshop of unknown kind");
+            }
+            if let Some(job) = w.job {
+                let matches = self.jobs.get(job).is_some_and(|j| {
+                    j.data == (JobKind::Craft { workshop: w.id, recipe: match j.data { JobKind::Craft { recipe, .. } => recipe, _ => None } })
+                        && matches!(j.data, JobKind::Craft { recipe, .. } if recipe.is_some() == w.built)
+                });
+                if !matches {
+                    return fail("workshop job is missing or does not match its state");
+                }
+            }
+        }
         if self.farms.windows(2).any(|pair| pair[0].pos >= pair[1].pos) {
             return fail("farm plots are not sorted and unique");
         }
@@ -539,6 +566,9 @@ impl FortressSim {
                     .farms
                     .binary_search_by_key(&job.pos, |plot| plot.pos)
                     .is_ok(),
+                (_, JobKind::Craft { workshop, .. }) => self
+                    .workshop_index(workshop)
+                    .is_some_and(|i| self.workshops[i].job == Some(job.id)),
             };
             if !valid {
                 return fail("job references an invalid location or item");

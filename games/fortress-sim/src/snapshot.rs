@@ -66,6 +66,8 @@ struct State {
     plant_ids: AllocatorState,
     plants: Vec<PlantRecord>,
     farms: Vec<crate::types::FarmPlot>,
+    workshops: Vec<crate::types::Workshop>,
+    next_workshop: u32,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -180,6 +182,8 @@ impl FortressSim {
                 })
                 .collect(),
             farms: self.farms.clone(),
+            workshops: self.workshops.clone(),
+            next_workshop: self.next_workshop,
         };
         let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
         *out = postcard::to_allocvec(&(
@@ -330,6 +334,17 @@ impl FortressSim {
             return Err(fail("farm plots must ascend by position"));
         }
         sim.farms = state.farms;
+        if state
+            .workshops
+            .windows(2)
+            .any(|pair| pair[0].id >= pair[1].id)
+            || state.workshops.iter().any(|w| w.id >= state.next_workshop)
+            || state.workshops.len() > crate::MAX_WORKSHOPS
+        {
+            return Err(fail("workshops must ascend by ID below the next ID"));
+        }
+        sim.workshops = state.workshops;
+        sim.next_workshop = state.next_workshop;
         sim.rebuild_item_index();
         let (w, d) = (sim.config.world_size_xy, sim.config.world_depth);
         sim.jobs = JobBoard::restore(
@@ -458,6 +473,18 @@ impl FortressSim {
             write!(out, "plant:{}:{}\t", id.index, id.generation).map_err(fail)?;
             self.pcols.dump_row(slot as u32, out);
             writeln!(out).map_err(fail)?;
+        }
+        for w in &self.workshops {
+            writeln!(
+                out,
+                "workshop:{}\tkind={} pos={:?} built={} job={:?}",
+                w.id,
+                self.content.ids.workshops[usize::from(w.kind)],
+                w.pos,
+                w.built,
+                w.job
+            )
+            .map_err(fail)?;
         }
         for plot in &self.farms {
             writeln!(

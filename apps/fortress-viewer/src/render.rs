@@ -322,6 +322,7 @@ pub fn draw_world(
                 JobOverlay::Haul => Color::new(0.6, 0.6, 0.6, 0.6),
                 JobOverlay::Fell => Color::new(0.6, 0.35, 0.1, 0.9),
                 JobOverlay::Farm => Color::new(0.3, 0.9, 0.3, 0.9),
+                JobOverlay::Craft => Color::new(0.9, 0.5, 0.9, 0.9),
             };
             let thickness = if job.claimed_by.is_some() { 2.5 } else { 1.0 };
             draw_rectangle_lines(sx + 1.0, sy + 1.0, s - 2.0, s - 2.0, thickness, color);

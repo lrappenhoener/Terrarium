@@ -221,6 +221,7 @@ impl FortressSim {
                 && self.farms.len() < self.config.max_farm_plots as usize
                 && self.world.get(p).is_some_and(|t| standable(*t))
                 && !self.is_stockpile(p)
+                && !self.is_workshop_tile(p)
             {
                 self.farms.insert(
                     at,
