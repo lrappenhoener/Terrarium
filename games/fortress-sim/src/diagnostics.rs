@@ -198,6 +198,9 @@ impl FortressSim {
             tile.state_hash(&mut world);
         }
         self.stockpiles.state_hash(&mut world);
+        self.slot_zone.state_hash(&mut world);
+        self.zones.state_hash(&mut world);
+        world.write_u32(self.next_zone);
 
         let mut residents = StateHasher::new();
         self.residents.hash_state(&mut residents);
@@ -464,6 +467,25 @@ impl FortressSim {
         }
         if self.stockpiles.windows(2).any(|pair| pair[0] >= pair[1]) {
             return fail("stockpile tiles are not sorted and unique");
+        }
+        if self.slot_zone.len() != self.stockpiles.len()
+            || self.slot_items.len() != self.stockpiles.len()
+            || self.zones.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || self.zones.iter().any(|z| {
+                z.id >= self.next_zone
+                    || z.priority > 9
+                    || z.materials().windows(2).any(|m| m[0] >= m[1])
+                    || !self.slot_zone.contains(&z.id)
+            })
+            || self
+                .slot_zone
+                .iter()
+                .any(|&id| self.zone_index(id).is_none())
+        {
+            return fail("stockpile zones are inconsistent");
+        }
+        if stock.iter().zip(&self.slot_items).any(|(a, b)| a != b) {
+            return fail("stockpile item counts differ from item locations");
         }
         for id in self.plants.iter_by_id() {
             let Some(slot) = self.pslot(id) else {

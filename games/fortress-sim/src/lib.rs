@@ -12,6 +12,7 @@ mod plants;
 mod production;
 mod render;
 mod snapshot;
+mod stock;
 mod temperature;
 mod types;
 pub mod view;
@@ -20,7 +21,7 @@ mod world;
 pub use config::{FortressConfig, Pathfinding, PhysicsConfig, StartItems};
 pub use content::GameContent;
 pub use sim_core::space::{Pos3, Tile, TileKind};
-pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
+pub use types::{BuildKind, DigMode, FortressCommand, ItemKind, Zone};
 
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
@@ -158,6 +159,12 @@ pub(crate) struct Diagnostics {
     pub heat_last_tiles: u64,
     pub support_last_units: u64,
     pub heat_pool_exhausted: u64,
+    pub hauls_deferred: u64,
+    /// Aborted tasks by `Task::tag`.
+    pub aborts: [u64; 11],
+    pub bulk_hauls: u64,
+    pub haul_distance: u64,
+    pub haul_count: u64,
     pub path_cost: u64,
     pub long_paths: u64,
     pub long_path_nodes: u64,
@@ -248,7 +255,16 @@ pub struct FortressSim {
     reservations: Reservations<ResKey, ResidentId>,
     queue: PathRequestQueue<ResidentId, Pos3>,
     pathfinder: Pathfinder,
+    /// Stockpile tiles in ascending order with their zone IDs.
     stockpiles: Vec<Pos3>,
+    slot_zone: Vec<u32>,
+    /// Derived: items lying directly on each stockpile tile.
+    slot_items: Vec<u32>,
+    /// Zones in ascending ID order.
+    zones: Vec<Zone>,
+    next_zone: u32,
+    /// Derived: ground tile of each item index, for the stockpile counts.
+    ground_at: Vec<Option<Pos3>>,
     events: EventQueue<Event>,
     ops: EntityCommandBuffer<Op, OpSource>,
     counters: Counters,
@@ -288,7 +304,8 @@ struct Scratch {
     assigner: Assigner,
     pending: Vec<(ResidentId, Task)>,
     outcomes: Vec<(ResidentId, ResKey, bool)>,
-    stock_counts: Vec<u16>,
+    candidates: Vec<ItemId>,
+    stale_hauls: Vec<JobId>,
     tile_changes: Vec<(Pos3, Tile)>,
     occupied: Vec<Pos3>,
     path: Vec<Pos3>,
@@ -338,7 +355,8 @@ impl Scratch {
             assigner: Assigner::with_capacity(residents, k),
             pending: Vec::with_capacity(residents),
             outcomes: Vec::with_capacity(residents * 2),
-            stock_counts: Vec::with_capacity(STOCKPILE_CAPACITY),
+            candidates: Vec::with_capacity(items),
+            stale_hauls: Vec::with_capacity(residents),
             tile_changes: Vec::with_capacity(residents),
             occupied: Vec::with_capacity(residents + items),
             path: Vec::with_capacity(config.max_path_nodes as usize * 4),
@@ -519,6 +537,11 @@ impl FortressSim {
             reservations: Reservations::with_capacity(residents as usize * 2 + 16),
             queue: PathRequestQueue::with_capacity(residents as usize),
             stockpiles: Vec::with_capacity(STOCKPILE_CAPACITY),
+            slot_zone: Vec::with_capacity(STOCKPILE_CAPACITY),
+            slot_items: Vec::with_capacity(STOCKPILE_CAPACITY),
+            zones: Vec::with_capacity(STOCKPILE_CAPACITY),
+            next_zone: 0,
+            ground_at: vec![None; items as usize],
             events: EventQueue::with_capacity(16),
             ops: EntityCommandBuffer::with_capacity(
                 residents as usize * 2 + items as usize / 4 + 4096,
@@ -761,29 +784,10 @@ impl FortressSim {
                 entry.produced += u64::from(units);
             }
             self.index_item(id);
-            self.ensure_haul(id);
             first.get_or_insert(id);
             left -= units;
         }
         first
-    }
-
-    /// Creates a haul job for a loose item outside stockpiles.
-    fn ensure_haul(&mut self, id: ItemId) {
-        let Some(slot) = self.islot(id) else { return };
-        let ItemLocation::Ground(at) = self.icols.location[slot] else {
-            return;
-        };
-        if self.icols.haul[slot].is_some()
-            || self.is_stockpile(at)
-            || self.reservations.is_reserved(ResKey::Item(id))
-            || self.stockpiles.is_empty()
-        {
-            return;
-        }
-        if let Some(job) = self.jobs.add(HAUL_PRIORITY, at, JobKind::Haul(id)) {
-            self.icols.haul[slot] = Some(job);
-        }
     }
 
     fn remove_haul(&mut self, id: ItemId) {
@@ -807,6 +811,9 @@ impl FortressSim {
         if let Task::Sow { stage: 1, plot, .. } = task {
             self.return_seed(id, self.rcols.position[slot], plot);
         }
+        if let Task::BulkHaul { job, .. } = task {
+            self.drop_bulk_job(job);
+        }
         if let Some(job) = task.job() {
             self.jobs.release(job);
         }
@@ -822,10 +829,10 @@ impl FortressSim {
                 self.icols.haul[islot] = None;
                 self.jobs.remove(job);
             }
-            self.ensure_haul(item);
         }
         if !matches!(task, Task::Idle | Task::Sleep) {
             self.counters.aborted_tasks = self.counters.aborted_tasks.saturating_add(1);
+            self.diag.aborts[task.tag()] += 1;
         }
         self.rcols.task[slot] = Task::Idle;
         self.rcols.route[slot] = Route::NONE;
@@ -836,6 +843,13 @@ impl FortressSim {
     /// container on the ground count at the container's tile; carried items and the
     /// contents of carried containers are not indexed.
     pub(crate) fn index_item(&mut self, id: ItemId) {
+        let ground = self
+            .islot(id)
+            .and_then(|slot| match self.icols.location[slot] {
+                ItemLocation::Ground(p) => Some(p),
+                _ => None,
+            });
+        self.track_ground(id, ground);
         let entry = self.islot(id).and_then(|slot| {
             let p = self.item_ground(id)?;
             Some((p, self.content.category_of(self.icols.kind[slot].0)))
@@ -870,6 +884,8 @@ impl FortressSim {
     pub(crate) fn rebuild_item_index(&mut self) {
         self.item_index.clear();
         self.contents.clear();
+        self.ground_at.fill(None);
+        self.slot_items.fill(0);
         let ids: Vec<ItemId> = self.items.iter_by_id().collect();
         for &id in &ids {
             if let Some(slot) = self.islot(id)
@@ -884,7 +900,6 @@ impl FortressSim {
     }
 
     /// Puts `item` into `container`, leaving its previous place.
-    #[allow(dead_code, reason = "used by bulk hauling and tests")]
     pub(crate) fn put_into(&mut self, item: ItemId, container: ItemId) -> bool {
         let (Some(slot), Some(cslot)) = (self.islot(item), self.islot(container)) else {
             return false;
@@ -1026,6 +1041,18 @@ impl FortressSim {
                 }
             }
             Task::Gather { plant, .. } => self.pslot(plant).map(|s| self.pcols.pos[s]),
+            Task::BulkHaul {
+                container,
+                item,
+                slot: dest,
+                stage,
+                ..
+            } => match stage {
+                0 => self.item_ground(container),
+                1 => self.item_ground(item?),
+                2 => Some(dest),
+                _ => None,
+            },
             Task::Craft {
                 workshop,
                 item,
@@ -1111,33 +1138,6 @@ impl FortressSim {
             .min_by_key(|&site| (job_distance(from, site), site))
     }
 
-    fn rebuild_stock(&mut self) {
-        let counts = &mut self.scratch.stock_counts;
-        counts.clear();
-        counts.resize(self.stockpiles.len(), 0);
-        for slot in 0..self.icols.len() {
-            if let ItemLocation::Ground(p) = self.icols.location[slot]
-                && let Ok(index) = self.stockpiles.binary_search(&p)
-            {
-                counts[index] = counts[index].saturating_add(1);
-            }
-        }
-    }
-
-    fn free_slot_near(&self, from: Pos3) -> Option<Pos3> {
-        self.stockpiles
-            .iter()
-            .zip(&self.scratch.stock_counts)
-            .filter(|&(&p, &count)| {
-                count == 0
-                    && !self.reservations.is_reserved(ResKey::Slot(p))
-                    && self.connectivity.reachable(from, p)
-            })
-            .map(|(&p, _)| (job_distance(from, p), p))
-            .min()
-            .map(|(_, p)| p)
-    }
-
     // ---------------------------------------------------------------- phases
 
     fn shuffle_slots(&mut self) {
@@ -1212,27 +1212,20 @@ impl FortressSim {
                     });
                 }
                 FortressCommand::DesignateStockpile { from, to } => {
-                    let (low, high) = box_range(from, to);
-                    if box_volume(low, high) > STOCKPILE_CAPACITY as u64 {
+                    let rejected = self.designate_stockpile(from, to);
+                    self.counters.invalid_designations += rejected;
+                }
+                FortressCommand::ConfigureStockpile {
+                    zone,
+                    ref categories,
+                    ref materials,
+                    priority,
+                    containers,
+                } => {
+                    if !self.configure_stockpile(zone, categories, materials, priority, containers)
+                    {
                         self.counters.invalid_designations += 1;
-                        continue;
                     }
-                    for_box(low, high, |p| {
-                        let at = self.stockpiles.partition_point(|&q| q < p);
-                        if self.stockpiles.get(at) == Some(&p) {
-                            return;
-                        }
-                        // A slot holds at most one item, so stacked tiles are not designated.
-                        if self.world.get(p).is_some_and(|t| standable(*t))
-                            && !self.is_workshop_tile(p)
-                            && self.item_index.count_at(p, 2) < 2
-                            && self.stockpiles.len() < STOCKPILE_CAPACITY
-                        {
-                            self.stockpiles.insert(at, p);
-                        } else {
-                            self.counters.invalid_designations += 1;
-                        }
-                    });
                 }
                 FortressCommand::Build { pos, kind } => {
                     let valid = self
@@ -1275,7 +1268,7 @@ impl FortressSim {
                     }
                     self.jobs
                         .retain(|job| !(inside(job.pos) && !matches!(job.data, JobKind::Haul(_))));
-                    self.stockpiles.retain(|&p| !inside(p));
+                    self.cancel_stockpiles(inside);
                     self.farms.retain(|plot| !inside(plot.pos));
                     self.workshops.retain(|w| !inside(w.pos));
                     for i in 0..self.workshops.len() {
@@ -1431,7 +1424,6 @@ impl FortressSim {
         if self.scratch.workers.is_empty() {
             return;
         }
-        self.rebuild_stock();
         let targets = &mut self.scratch.job_positions;
         targets.clear();
         targets.extend(
@@ -1441,13 +1433,11 @@ impl FortressSim {
                 .map(|job| job.pos),
         );
         targets.sort_unstable();
-        let free_slots = self
-            .scratch
-            .stock_counts
-            .iter()
-            .zip(&self.stockpiles)
-            .filter(|&(&count, &p)| count == 0 && !self.reservations.is_reserved(ResKey::Slot(p)))
-            .count();
+        let has_stock = (0..self.stockpiles.len()).any(|slot| {
+            let p = self.stockpiles[slot];
+            !self.reservations.is_reserved(ResKey::Slot(p))
+                && (self.slot_items[slot] == 0 || self.slot_container(p).is_some())
+        });
         let stones = self.free_items(self.content.stone) > 0;
         {
             let (world, connectivity, reservations, icols, items) = (
@@ -1466,7 +1456,7 @@ impl FortressSim {
                         && items.slot(item).is_some_and(|slot| {
                             icols.location[slot as usize] == ItemLocation::Ground(job.pos)
                         })
-                        && (free_slots > 0 || targets.binary_search(&job.pos).is_ok())
+                        && (has_stock || targets.binary_search(&job.pos).is_ok())
                 }
                 JobKind::Fell(_) | JobKind::Harvest(_) | JobKind::Sow => {
                     connectivity.is_standable(job.pos)
@@ -1550,9 +1540,47 @@ impl FortressSim {
                     .map(|site| Task::Dig { job: job_id, site }),
                 JobKind::Haul(item) => self.item_ground(item).and_then(|p| {
                     let clearing = self.scratch.job_positions.binary_search(&p).is_ok();
-                    let dest = self
-                        .free_slot_near(p)
-                        .or_else(|| clearing.then(|| self.dump_near(p)).flatten())?;
+                    let Some(dest) = self
+                        .destination(item, p)
+                        .or_else(|| clearing.then(|| self.dump_near(p)).flatten())
+                    else {
+                        // The destination filled up; the planner recreates the job later.
+                        self.scratch.stale_hauls.push(job_id);
+                        return None;
+                    };
+                    if !clearing {
+                        let mut extra = std::mem::take(&mut self.scratch.ingredients);
+                        let container = self.plan_bulk(item, p, dest, &mut extra);
+                        let mut keys = std::mem::take(&mut self.scratch.group_keys);
+                        keys.clear();
+                        if let Some(container) = container {
+                            keys.push(ResKey::Item(container));
+                            keys.push(ResKey::Item(item));
+                            keys.extend(extra.iter().map(|&i| ResKey::Item(i)));
+                            keys.push(ResKey::Slot(dest));
+                        }
+                        let bulk = container.is_some()
+                            && self.scratch.groups.push(
+                                worker,
+                                priority,
+                                job_distance(at, p),
+                                &keys,
+                            );
+                        self.scratch.group_keys = keys;
+                        self.scratch.ingredients = extra;
+                        if let (true, Some(container)) = (bulk, container) {
+                            self.diag.bulk_hauls += 1;
+                            return Some(Task::BulkHaul {
+                                job: job_id,
+                                container,
+                                item: None,
+                                slot: dest,
+                                stage: 0,
+                            });
+                        }
+                    }
+                    self.diag.haul_distance += u64::from(job_distance(p, dest));
+                    self.diag.haul_count += 1;
                     self.reservations.claim(
                         ResKey::Item(item),
                         worker,
@@ -1608,7 +1636,7 @@ impl FortressSim {
             let (worker, task) = self.scratch.pending[i];
             let start = outcomes.partition_point(|&(holder, _, _)| holder < worker);
             let end = outcomes.partition_point(|&(holder, _, _)| holder <= worker);
-            let craft = matches!(task, Task::Craft { .. });
+            let craft = matches!(task, Task::Craft { .. } | Task::BulkHaul { .. });
             let all_won = if craft {
                 wins.binary_search(&(worker, true)).is_ok()
             } else {
@@ -1634,6 +1662,21 @@ impl FortressSim {
         }
         self.scratch.group_wins = wins;
         self.scratch.outcomes = outcomes;
+        for i in 0..self.scratch.stale_hauls.len() {
+            let job = self.scratch.stale_hauls[i];
+            if let Some(JobKind::Haul(item)) = self
+                .jobs
+                .get(job)
+                .filter(|j| j.state == JobState::Open)
+                .map(|j| j.data)
+            {
+                if let Some(s) = self.islot(item) {
+                    self.icols.haul[s] = None;
+                }
+                self.jobs.remove(job);
+            }
+        }
+        self.scratch.stale_hauls.clear();
         self.scratch.assignments = assignments;
         self.scratch.assigner = assigner;
     }
@@ -1836,6 +1879,11 @@ impl FortressSim {
                         self.release_and_idle(slot, id);
                     }
                 }
+                Task::BulkHaul { .. } => {
+                    if self.work_bulk(slot, id, task) {
+                        self.release_and_idle(slot, id);
+                    }
+                }
                 Task::Eat { item } => {
                     if self.item_ground(item) != Some(at) {
                         self.scratch.abort.push(id);
@@ -1905,7 +1953,7 @@ impl FortressSim {
                             stage: 1,
                         };
                     } else {
-                        self.drop_item(slot, item, at);
+                        self.deliver(slot, item, at);
                         if let Some(islot) = self.islot(item) {
                             self.icols.haul[islot] = None;
                         }
@@ -2019,7 +2067,7 @@ impl FortressSim {
         if let Some(islot) = self.islot(item) {
             self.contents.remove(item.index);
             self.icols.location[islot] = ItemLocation::Carried(id);
-            self.item_index.remove(item.index);
+            self.index_item(item);
             self.reindex_contents(item);
             self.rcols.carried[slot] = Some(item);
             self.rcols.route[slot] = Route::NONE;
@@ -2126,20 +2174,7 @@ impl FortressSim {
             _ => true,
         });
         self.apply_ops();
-        if !self.stockpiles.is_empty() {
-            for slot in 0..self.icols.len() {
-                if let Some(id) = self.items.id(slot as u32)
-                    && self.icols.haul[slot].is_none()
-                    && staggered(
-                        self.tick,
-                        self.config.haul_scan_interval,
-                        u64::from(id.index),
-                    )
-                {
-                    self.ensure_haul(id);
-                }
-            }
-        }
+        self.plan_transport();
     }
 
     /// Removes an item and books its units as removed. A container's contents stay
@@ -2167,8 +2202,8 @@ impl FortressSim {
         self.contents.remove(item.index);
         if let Some(slot) = self.items.destroy(item) {
             self.icols.swap_remove(slot);
-            self.item_index.remove(item.index);
         }
+        self.index_item(item);
     }
 
     /// Moves all units of `from` onto `into` if both still form compatible,
@@ -2195,8 +2230,8 @@ impl FortressSim {
         self.remove_haul(from);
         if let Some(slot) = self.items.destroy(from) {
             self.icols.swap_remove(slot);
-            self.item_index.remove(from.index);
         }
+        self.index_item(from);
     }
 
     /// Moves `amount` units of a stack on the ground into a new stack beside it.
@@ -2228,7 +2263,6 @@ impl FortressSim {
             None,
         );
         self.index_item(id);
-        self.ensure_haul(id);
     }
 
     fn apply_ops(&mut self) {

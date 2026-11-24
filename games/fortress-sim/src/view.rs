@@ -239,6 +239,15 @@ impl View<'_> {
         &self.sim.stockpiles
     }
 
+    /// Zone ID of each stockpile tile, aligned with `stockpiles`.
+    pub fn stockpile_zones(&self) -> &[u32] {
+        &self.sim.slot_zone
+    }
+
+    pub fn zones(&self) -> &[crate::types::Zone] {
+        &self.sim.zones
+    }
+
     /// Remaining path of a resident, starting at its next node.
     pub fn path(&self, resident: u64, out: &mut Vec<Pos3>) {
         out.clear();

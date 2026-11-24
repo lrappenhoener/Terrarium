@@ -16,7 +16,6 @@ use sim_core::{
 use crate::{
     FortressSim, MAX_QUALITY, SOURCE_EVENT, box_range, box_volume,
     content::Ingredient,
-    for_box,
     types::{FarmPlot, ItemKind, JobKind, Op, PlantId, ResidentId, Task},
     world,
 };
@@ -203,10 +202,9 @@ impl FortressSim {
         };
         let (underground, tree) = (def.underground, def.tree);
         let mut rejected = 0;
-        let mut plots = std::mem::take(&mut self.scratch.path);
-        plots.clear();
-        for_box(low, high, |p| plots.push(p));
-        for &p in &plots {
+        for p in (low.z..=high.z).flat_map(|z| {
+            (low.y..=high.y).flat_map(move |y| (low.x..=high.x).map(move |x| Pos3::new(x, y, z)))
+        }) {
             let surface = world::surface(self.seed, &self.config, p.x, p.y);
             let level_ok = if underground {
                 p.z < surface
@@ -236,7 +234,6 @@ impl FortressSim {
                 rejected += 1;
             }
         }
-        self.scratch.path = plots;
         rejected
     }
 

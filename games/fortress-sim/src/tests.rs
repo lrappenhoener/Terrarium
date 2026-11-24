@@ -187,14 +187,15 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0xca5793715dd6af72;
+const GOLDEN_ASTAR: u64 = 0x780106be6aa17f6c;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
     let schedule = scenario();
     let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
     run_with_scenario(&mut sim, &schedule, 2000, |_| {});
-    assert!(sim.counters.dug >= 440, "dug {}", sim.counters.dug);
+    // Demand-driven hauling (Etappe 6) shifts the job mix: 426 tiles at the time.
+    assert!(sim.counters.dug >= 420, "dug {}", sim.counters.dug);
     assert_eq!(sim.diag.lowest_level, 2);
     let bottom = sim.world.get(Pos3::new(40, 48, 2)).unwrap();
     assert_eq!(bottom.kind, TileKind::StairUp);
@@ -472,11 +473,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x86847fca4a582936);
+    assert_eq!(sim.state_hash(), 0x9cec46b8050120bd);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x8636010e121f62d0);
+    assert_eq!(sim.state_hash(), 0xb1380bbfd37bfe9e);
 }
 
 #[test]
@@ -498,10 +499,11 @@ fn golden_hash_with_hierarchical_pathfinding() {
         "{:#018x}",
         sim.state_hash()
     );
-    assert!(sim.counters.dug >= 450);
+    // Demand-driven hauling (Etappe 6) shifts the job mix: 426 tiles at the time.
+    assert!(sim.counters.dug >= 420, "dug {}", sim.counters.dug);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x30c0131be75483cc;
+const GOLDEN_HIERARCHICAL: u64 = 0xd6e132c781285fde;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -813,9 +815,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0x6da812e2c3b92df9;
-const GOLDEN_MAGMA: u64 = 0x84d2c9a748795644;
-const GOLDEN_CAVEIN: u64 = 0x1ecf31dff554b3c9;
+const GOLDEN_FLOOD: u64 = 0xae14ccadf0e85935;
+const GOLDEN_MAGMA: u64 = 0x169492ac999447b1;
+const GOLDEN_CAVEIN: u64 = 0x5416739e9896adcc;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -1605,4 +1607,166 @@ fn placing_a_workshop_builds_it_from_stones() {
     assert_eq!(sim.ledger[usize::from(block.0)].produced, 2);
     let masonry = GameContent::id_of(&sim.content.ids.skills, "masonry").unwrap();
     assert!((0..sim.rcols.len()).any(|s| sim.rcols.skills[s].0[usize::from(masonry)] > 0));
+}
+
+fn open_hauls(sim: &FortressSim) -> usize {
+    sim.jobs
+        .iter()
+        .filter(|j| matches!(j.data, JobKind::Haul(_)) && j.state != JobState::Done)
+        .count()
+}
+
+#[test]
+fn zones_filter_and_relocate_by_priority() {
+    let mut sim = flat(calm());
+    let (stone, ration) = (kind(&sim, "stone"), kind(&sim, "ration"));
+    let material = sim.content.ration_material;
+    sim.step(&[FortressCommand::DesignateStockpile {
+        from: Pos3::new(2, 10, 1),
+        to: Pos3::new(9, 12, 1),
+    }]);
+    for i in 0..6 {
+        sim.spawn_item(Pos3::new(3 + i, 4, 1), stone, 3, 1, 0);
+        sim.spawn_item(Pos3::new(3 + i, 5, 1), ration, material, 1, 0);
+    }
+    for _ in 0..800 {
+        sim.step(&[]);
+    }
+    let in_zone = |sim: &FortressSim, kind: ItemKind, zone: u32| {
+        sim.items
+            .iter_by_id()
+            .filter(|&id| {
+                let s = sim.islot(id).unwrap();
+                sim.icols.kind[s] == kind
+                    && sim
+                        .item_ground(id)
+                        .and_then(|p| sim.slot_index(p))
+                        .is_some_and(|i| sim.slot_zone[i] == zone)
+            })
+            .count()
+    };
+    assert_eq!(in_zone(&sim, stone, 0), 6);
+    // A second, higher zone for stone only takes the stones out of the first.
+    sim.step(&[
+        FortressCommand::DesignateStockpile {
+            from: Pos3::new(2, 14, 1),
+            to: Pos3::new(9, 14, 1),
+        },
+        FortressCommand::ConfigureStockpile {
+            zone: 1,
+            categories: vec!["stone".into()],
+            materials: vec![],
+            priority: 5,
+            containers: false,
+        },
+        FortressCommand::ConfigureStockpile {
+            zone: 7,
+            categories: vec![],
+            materials: vec![],
+            priority: 5,
+            containers: false,
+        },
+    ]);
+    assert_eq!(sim.counters.invalid_designations, 1, "unknown zone");
+    for tick in 0..1500 {
+        sim.step(&[]);
+        if tick % 50 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    }
+    assert_eq!(
+        in_zone(&sim, stone, 1),
+        6,
+        "stones moved to the higher zone"
+    );
+    assert_eq!(in_zone(&sim, stone, 0), 0);
+    assert_eq!(in_zone(&sim, ration, 1), 0, "the filter keeps food out");
+}
+
+#[test]
+fn transport_jobs_are_created_on_demand_and_capped() {
+    let config = FortressConfig {
+        max_open_hauls: 20,
+        hauls_per_tick: 4,
+        initial_residents: 4,
+        ..calm()
+    };
+    let mut sim = flat(config);
+    let stone = kind(&sim, "stone");
+    for y in 3..21 {
+        for x in 12..22 {
+            sim.spawn_item(Pos3::new(x, y, 1), stone, 3, 1, 0);
+        }
+    }
+    sim.step(&[]);
+    assert_eq!(open_hauls(&sim), 0, "no stockpile, no transport jobs");
+    sim.step(&[FortressCommand::DesignateStockpile {
+        from: Pos3::new(2, 3, 1),
+        to: Pos3::new(9, 20, 1),
+    }]);
+    let mut peak = 0;
+    let mut previous = open_hauls(&sim);
+    for tick in 0..3000 {
+        sim.step(&[]);
+        let open = open_hauls(&sim);
+        assert!(open <= 20, "cap of open hauls");
+        assert!(open <= previous + 4, "at most four new hauls per tick");
+        peak = peak.max(open);
+        previous = open;
+        if tick % 100 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    }
+    assert!(peak >= 10, "demand creates hauls: {peak}");
+    assert!(sim.counters.hauled >= 100, "hauled {}", sim.counters.hauled);
+    assert!(sim.diag.hauls_deferred > 0, "the cap deferred hauls");
+}
+
+#[test]
+fn bulk_hauls_carry_several_items_in_a_barrel() {
+    let mut sim = flat(calm());
+    let (stone, barrel) = (kind(&sim, "stone"), kind(&sim, "barrel"));
+    let oak = GameContent::id_of(&sim.content.ids.materials, "oak_wood").unwrap();
+    for i in 0..8 {
+        sim.spawn_item(Pos3::new(14 + i % 4, 14 + i / 4, 1), stone, 3, 1, 0);
+    }
+    let container = sim
+        .spawn_item(Pos3::new(13, 13, 1), barrel, oak, 1, 0)
+        .unwrap();
+    sim.step(&[
+        FortressCommand::DesignateStockpile {
+            from: Pos3::new(2, 4, 1),
+            to: Pos3::new(4, 6, 1),
+        },
+        FortressCommand::ConfigureStockpile {
+            zone: 0,
+            categories: vec!["stone".into()],
+            materials: vec![],
+            priority: 1,
+            containers: true,
+        },
+    ]);
+    for tick in 0..1500 {
+        sim.step(&[]);
+        if tick % 25 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    }
+    assert!(sim.diag.bulk_hauls >= 1, "a bulk haul ran");
+    let at = sim.item_ground(container).unwrap();
+    assert!(sim.is_stockpile(at), "the barrel stands on the stockpile");
+    assert!(
+        sim.contents.count(container.index) >= 2,
+        "it carries several stones"
+    );
+    let stored = (0..sim.icols.len())
+        .filter(|&s| sim.icols.kind[s] == stone)
+        .filter(|&s| {
+            sim.items
+                .id(s as u32)
+                .and_then(|id| sim.item_ground(id))
+                .is_some_and(|p| sim.is_stockpile(p))
+        })
+        .count();
+    assert_eq!(stored, 8, "all stones are stored");
 }

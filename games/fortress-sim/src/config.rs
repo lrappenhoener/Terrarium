@@ -139,6 +139,11 @@ pub struct FortressConfig {
     pub pathfinding: Pathfinding,
     pub physics: PhysicsConfig,
     pub haul_scan_interval: u64,
+    /// Transport jobs: at most this many open at once and created per tick.
+    pub max_open_hauls: u32,
+    pub hauls_per_tick: u32,
+    /// Items within this distance of a haul join it in a bulk container.
+    pub bulk_radius: u32,
     /// Calendar: a season lasts `days_per_season` days of `ticks_per_day` ticks.
     pub ticks_per_day: u64,
     pub days_per_season: u64,
@@ -201,6 +206,9 @@ impl Default for FortressConfig {
             pathfinding: Pathfinding::Astar,
             physics: PhysicsConfig::default(),
             haul_scan_interval: 64,
+            max_open_hauls: 64,
+            hauls_per_tick: 16,
+            bulk_radius: 12,
             ticks_per_day: 1_200,
             days_per_season: 10,
             tree_density: 20,
@@ -271,6 +279,8 @@ impl FortressConfig {
             || self.path_expansion_limit == 0
             || self.haul_scan_interval == 0
             || self.item_search_cells == 0
+            || self.max_open_hauls == 0
+            || self.hauls_per_tick == 0
             || self.ticks_per_day == 0
             || self.days_per_season == 0
             || self.tree_density > 1000
@@ -338,7 +348,14 @@ impl FortressConfig {
         ] {
             hash.write_u32(value);
         }
-        for value in [self.tree_density, self.max_plants, self.max_farm_plots] {
+        for value in [
+            self.tree_density,
+            self.max_plants,
+            self.max_farm_plots,
+            self.max_open_hauls,
+            self.hauls_per_tick,
+            self.bulk_radius,
+        ] {
             hash.write_u32(value);
         }
         for value in [

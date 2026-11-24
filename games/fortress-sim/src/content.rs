@@ -315,6 +315,8 @@ pub struct Ids {
 #[derive(Debug, Clone)]
 pub struct GameContent {
     pub fingerprint: u64,
+    /// Categories of item kinds that can carry other items while hauling.
+    pub bulk_categories: u64,
     pub ids: Ids,
     pub categories: Vec<CategoryDef>,
     pub materials: Vec<MaterialDef>,
@@ -862,8 +864,13 @@ impl GameContent {
         let Some(ration_material) = item_defs[usize::from(ration)].material else {
             return Err(items.error(ration, "material", "Rationen brauchen ein Material"));
         };
+        let bulk_categories = item_defs
+            .iter()
+            .filter(|d| d.bulk)
+            .fold(0u64, |mask, d| mask | 1 << d.category);
         Ok(Self {
             fingerprint: content.fingerprint(),
+            bulk_categories,
             ration_material,
             stone: required("category", categories.ids(), "stone")? as u8,
             log: required("category", categories.ids(), "log")? as u8,

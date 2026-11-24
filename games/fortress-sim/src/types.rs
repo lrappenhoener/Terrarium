@@ -29,6 +29,38 @@ impl StateHash for Skills {
     }
 }
 
+/// Materials a zone filter can name.
+pub const ZONE_MATERIALS: usize = 8;
+
+/// A stockpile zone: accepted categories (bit mask) and up to `ZONE_MATERIALS`
+/// materials (sorted, none for all), priority and whether single hauls fill
+/// containers standing on its tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Zone {
+    /// Stable, never reused.
+    pub id: u32,
+    pub categories: u64,
+    pub materials: [u16; ZONE_MATERIALS],
+    pub material_count: u8,
+    pub priority: u8,
+    pub containers: bool,
+}
+
+impl Zone {
+    pub fn materials(&self) -> &[u16] {
+        &self.materials[..usize::from(self.material_count)]
+    }
+}
+
+sim_core::state_hash_struct!(Zone {
+    id,
+    categories,
+    materials,
+    material_count,
+    priority,
+    containers
+});
+
 /// A workshop: content kind, footprint corner, construction state and current job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workshop {
@@ -258,6 +290,16 @@ pub enum Task {
         plot: Pos3,
         stage: u8,
     },
+    /// Collects several items into a carried container: stage 0 fetches the
+    /// container, stage 1 gathers `item`, stage 2 delivers the container to `slot`,
+    /// stage 3 plans the next item. Container, items and slot are reserved.
+    BulkHaul {
+        job: JobId,
+        container: ItemId,
+        item: Option<ItemId>,
+        slot: Pos3,
+        stage: u8,
+    },
     /// Workshop job: stage 0 fetches `item`, stage 1 carries it to the input tile,
     /// stage 2 works, stage 3 plans the next step. All ingredients are reserved.
     Craft {
@@ -276,6 +318,7 @@ impl Task {
             | Self::Build { job, .. }
             | Self::Gather { job, .. }
             | Self::Sow { job, .. }
+            | Self::BulkHaul { job, .. }
             | Self::Craft { job, .. } => Some(job),
             _ => None,
         }
@@ -290,7 +333,25 @@ impl Task {
             (Self::Build { item, .. }, ResKey::Item(other)) => item == other,
             (Self::Sow { seed, stage: 0, .. }, ResKey::Item(other)) => seed == other,
             (Self::Craft { .. }, ResKey::Item(_)) => true,
+            (Self::BulkHaul { .. }, _) => true,
             _ => false,
+        }
+    }
+
+    /// Dense index of the variant, for diagnostics.
+    pub(crate) fn tag(self) -> usize {
+        match self {
+            Self::Idle => 0,
+            Self::Sleep => 1,
+            Self::Eat { .. } => 2,
+            Self::Dig { .. } => 3,
+            Self::Haul { .. } => 4,
+            Self::Build { .. } => 5,
+            Self::Flee { .. } => 6,
+            Self::Gather { .. } => 7,
+            Self::Sow { .. } => 8,
+            Self::Craft { .. } => 9,
+            Self::BulkHaul { .. } => 10,
         }
     }
 
@@ -306,6 +367,7 @@ impl Task {
             Self::Gather { .. } => "gather",
             Self::Sow { .. } => "sow",
             Self::Craft { .. } => "craft",
+            Self::BulkHaul { .. } => "bulk_haul",
         }
     }
 }
@@ -367,6 +429,16 @@ impl StateHash for Task {
             } => {
                 hash.write_u8(9);
                 (job, workshop, item, stage).state_hash(hash);
+            }
+            Self::BulkHaul {
+                job,
+                container,
+                item,
+                slot,
+                stage,
+            } => {
+                hash.write_u8(10);
+                (job, container, item, slot, stage).state_hash(hash);
             }
         }
     }
@@ -497,5 +569,14 @@ pub enum FortressCommand {
     PlaceWorkshop {
         kind: String,
         pos: Pos3,
+    },
+    /// Sets a zone's filters: category and material IDs (empty for all), priority
+    /// (higher first) and whether hauls fill containers on its tiles.
+    ConfigureStockpile {
+        zone: u32,
+        categories: Vec<String>,
+        materials: Vec<String>,
+        priority: u8,
+        containers: bool,
     },
 }

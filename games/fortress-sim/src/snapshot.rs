@@ -68,6 +68,9 @@ struct State {
     farms: Vec<crate::types::FarmPlot>,
     workshops: Vec<crate::types::Workshop>,
     next_workshop: u32,
+    slot_zone: Vec<u32>,
+    zones: Vec<crate::types::Zone>,
+    next_zone: u32,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -184,6 +187,9 @@ impl FortressSim {
             farms: self.farms.clone(),
             workshops: self.workshops.clone(),
             next_workshop: self.next_workshop,
+            slot_zone: self.slot_zone.clone(),
+            zones: self.zones.clone(),
+            next_zone: self.next_zone,
         };
         let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
         *out = postcard::to_allocvec(&(
@@ -274,7 +280,21 @@ impl FortressSim {
         {
             return Err(fail("invalid stockpiles"));
         }
+        if state.slot_zone.len() != state.stockpiles.len()
+            || state.zones.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || state.zones.iter().any(|z| z.id >= state.next_zone)
+            || state
+                .slot_zone
+                .iter()
+                .any(|id| state.zones.binary_search_by_key(id, |z| z.id).is_err())
+        {
+            return Err(fail("invalid stockpile zones"));
+        }
+        sim.slot_items = vec![0; state.stockpiles.len()];
         sim.stockpiles.extend(state.stockpiles);
+        sim.slot_zone = state.slot_zone;
+        sim.zones = state.zones;
+        sim.next_zone = state.next_zone;
         if state
             .residents
             .windows(2)
@@ -465,14 +485,26 @@ impl FortressSim {
             )
             .map_err(fail)?;
         }
-        for p in &self.stockpiles {
-            writeln!(out, "stockpile:{},{},{}\t1", p.x, p.y, p.z).map_err(fail)?;
+        for (p, zone) in self.stockpiles.iter().zip(&self.slot_zone) {
+            writeln!(out, "stockpile:{},{},{}\tzone={zone}", p.x, p.y, p.z).map_err(fail)?;
         }
         for id in self.plants.iter_by_id() {
             let Some(slot) = self.pslot(id) else { continue };
             write!(out, "plant:{}:{}\t", id.index, id.generation).map_err(fail)?;
             self.pcols.dump_row(slot as u32, out);
             writeln!(out).map_err(fail)?;
+        }
+        for z in &self.zones {
+            writeln!(
+                out,
+                "zone:{}\tcategories={:#x} materials={:?} priority={} containers={}",
+                z.id,
+                z.categories,
+                z.materials(),
+                z.priority,
+                z.containers
+            )
+            .map_err(fail)?;
         }
         for w in &self.workshops {
             writeln!(
