@@ -21,19 +21,56 @@ pub enum TileKind {
 }
 
 /// A layered tile. `material` is opaque to `sim-core`; games assign its meaning.
+/// `flags` holds the floor (bit 0) and a temporary impassable marker (bit 1), for
+/// example set by a game while a liquid fills the tile. Without the marker the
+/// byte equals the former `floor: bool` in hashes and Postcard encodings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tile {
     pub kind: TileKind,
-    pub floor: bool,
+    flags: u8,
     pub material: u16,
 }
+
+const FLOOR: u8 = 1;
+const IMPASSABLE: u8 = 2;
 
 impl Tile {
     pub const fn new(kind: TileKind, floor: bool, material: u16) -> Self {
         Self {
             kind,
-            floor,
+            flags: if floor { FLOOR } else { 0 },
             material,
+        }
+    }
+
+    pub const fn floor(self) -> bool {
+        self.flags & FLOOR != 0
+    }
+
+    pub const fn with_floor(self, floor: bool) -> Self {
+        Self {
+            flags: if floor {
+                self.flags | FLOOR
+            } else {
+                self.flags & !FLOOR
+            },
+            ..self
+        }
+    }
+
+    /// Whether walking onto the tile is temporarily impossible.
+    pub const fn impassable(self) -> bool {
+        self.flags & IMPASSABLE != 0
+    }
+
+    pub const fn with_impassable(self, impassable: bool) -> Self {
+        Self {
+            flags: if impassable {
+                self.flags | IMPASSABLE
+            } else {
+                self.flags & !IMPASSABLE
+            },
+            ..self
         }
     }
 }
@@ -41,7 +78,7 @@ impl Tile {
 impl StateHash for Tile {
     fn state_hash(&self, hash: &mut StateHasher) {
         hash.write_u8(self.kind as u8);
-        hash.write_bool(self.floor);
+        hash.write_u8(self.flags);
         self.material.state_hash(hash);
     }
 }
@@ -64,10 +101,11 @@ const fn climbs_down(kind: TileKind) -> bool {
     matches!(kind, TileKind::StairDown | TileKind::StairUpDown)
 }
 
-/// A unit can stand on a non-solid tile with a floor, a stair or a ramp.
+/// A unit can stand on a non-solid, passable tile with a floor, a stair or a ramp.
 pub const fn standable(tile: Tile) -> bool {
     !matches!(tile.kind, TileKind::Solid)
-        && (tile.floor
+        && !tile.impassable()
+        && (tile.floor()
             || matches!(
                 tile.kind,
                 TileKind::StairUp | TileKind::StairDown | TileKind::StairUpDown | TileKind::Ramp
@@ -86,11 +124,7 @@ fn standable_at(source: &impl TileSource, p: Pos3) -> bool {
 
 /// Excavates a solid tile into open floor. Neighboring floors are unaffected.
 pub const fn dig(tile: Tile) -> Tile {
-    Tile {
-        kind: TileKind::Open,
-        floor: true,
-        material: tile.material,
-    }
+    Tile::new(TileKind::Open, true, tile.material)
 }
 
 /// Orthogonal offsets in deterministic order: north, west, east, south.

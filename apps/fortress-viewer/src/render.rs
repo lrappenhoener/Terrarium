@@ -107,7 +107,7 @@ fn draw_tile(tile: Tile, built: bool, materials: &Materials, x: f32, y: f32, s: 
                 y,
                 s,
                 s,
-                darken(if tile.floor { FLOOR } else { AIR }, dim),
+                darken(if tile.floor() { FLOOR } else { AIR }, dim),
             );
         }
         TileKind::Door => {
@@ -180,11 +180,11 @@ pub fn draw_world(
             let (sx, sy) = camera.tile_to_screen(x as f32, y as f32, screen);
             let p = Pos3::new(x, y, z);
             let Some(tile) = mirror.get(p) else { continue };
-            if tile.kind == TileKind::Open && !tile.floor {
+            if tile.kind == TileKind::Open && !tile.floor() {
                 // Look down one level through open tiles without a floor.
                 let below = p.offset(0, 0, -1);
                 match mirror.get(below) {
-                    Some(lower) if !(lower.kind == TileKind::Open && !lower.floor) => {
+                    Some(lower) if !(lower.kind == TileKind::Open && !lower.floor()) => {
                         draw_tile(lower, mirror.is_built(below), materials, sx, sy, s, 0.45);
                     }
                     _ => draw_rectangle(sx, sy, s, s, AIR),

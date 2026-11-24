@@ -331,7 +331,12 @@ impl FortressSim {
                 writeln!(
                     out,
                     "tile:{},{},{}\t{:?} floor={} material={}",
-                    p.x, p.y, p.z, tile.kind, tile.floor, tile.material
+                    p.x,
+                    p.y,
+                    p.z,
+                    tile.kind,
+                    tile.floor(),
+                    tile.material
                 )
                 .map_err(fail)?;
             }

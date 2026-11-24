@@ -32,10 +32,10 @@ impl FortressSim {
                     TileKind::Solid if ore => b'*',
                     TileKind::Solid if tile.material == world::SOIL => b':',
                     TileKind::Solid => b'#',
-                    TileKind::Open if tile.floor && self.stockpiles.binary_search(&p).is_ok() => {
+                    TileKind::Open if tile.floor() && self.stockpiles.binary_search(&p).is_ok() => {
                         b'='
                     }
-                    TileKind::Open if tile.floor => b'.',
+                    TileKind::Open if tile.floor() => b'.',
                     TileKind::Open => b' ',
                     TileKind::StairUp => b'<',
                     TileKind::StairDown => b'>',

@@ -268,8 +268,8 @@ fn build_result(kind: BuildKind, material: u16) -> Tile {
 
 pub(crate) fn build_target_valid(tile: Tile, kind: BuildKind) -> bool {
     match kind {
-        BuildKind::Floor => tile.kind == TileKind::Open && !tile.floor,
-        _ => tile.kind == TileKind::Open && tile.floor,
+        BuildKind::Floor => tile.kind == TileKind::Open && !tile.floor(),
+        _ => tile.kind == TileKind::Open && tile.floor(),
     }
 }
 

@@ -509,7 +509,7 @@ async fn main() {
                 lines.push(format!(
                     "{:?} Boden {} Material {} {}",
                     tile.kind,
-                    tile.floor,
+                    tile.floor(),
                     tile.material,
                     materials
                         .names
