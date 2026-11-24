@@ -39,8 +39,11 @@ Weitere Argumente: `--config <toml>`, `--speed pause|1|2|5|max`, `--base-tps <n>
 | F | ausgewähltem Bewohner folgen |
 | Esc | Auswahl aufheben |
 | F1 / F2 / F3 / F4 | Overlays Jobs / Pfad / Erreichbarkeits-Regionen (Debug) / Chunk-Änderungen (Debug) |
+| F6 / F7 / F8 | Overlays Temperatur-Heatmap / aktive Chunks (blau Flüssigkeit, rot Wärme) / ausstehende Stützprüfungen (einsturzgefährdet, Debug) |
 | F5 / F9 | Speichern / Laden (`sessions/quicksave.snap`) |
 | Strg+Q | Beenden |
+
+Wasser (blau) und Magma (orange) erscheinen immer, ab einer Kachelgröße von 14 Pixeln mit Ziffer für den Stand 1–7.
 
 Autosave schreibt alle 6.000 Ticks (5 Minuten bei 1×) `sessions/<sitzung>-autosave.snap`. Speicherdauer und Größe erscheinen im HUD.
 

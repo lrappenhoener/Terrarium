@@ -334,6 +334,7 @@ pub enum Control {
     Inspect(Option<u64>),
     Select(Option<u64>),
     Regions(Option<i32>),
+    Temperature(Option<i32>),
     /// Stop when the tick is reached, for benchmarks.
     StopAt(u64),
     /// Pause when the tick is reached, for screenshots.
@@ -356,6 +357,9 @@ pub struct RunSummary {
 
 struct Publisher {
     versions: Vec<u32>,
+    fluid_versions: Vec<u32>,
+    fluid_scratch: Vec<u8>,
+    temperature: Option<i32>,
     scratch: Vec<sim_core::space::Tile>,
     selected: Option<u64>,
     inspect: Option<u64>,
@@ -404,6 +408,35 @@ impl Publisher {
                     frame.store_chunk(chunk, low, high, scratch.iter().copied());
                 }
             }
+            self.fluid_versions.resize(chunks, u32::MAX);
+            for chunk in 0..chunks as u32 {
+                let version = view.fluid_chunk_version(chunk);
+                if self.fluid_versions[chunk as usize] == version {
+                    continue;
+                }
+                self.fluid_versions[chunk as usize] = version;
+                if let Some((low, high)) = view.chunk_bounds(chunk) {
+                    let scratch = &mut self.fluid_scratch;
+                    scratch.clear();
+                    view.chunk_fluids(chunk, |_, value| scratch.push(*value));
+                    frame.store_fluids(chunk, low, high, scratch.iter().copied());
+                }
+            }
+            frame.activity.clear();
+            frame
+                .activity
+                .extend((0..chunks as u32).map(|chunk| view.chunk_activity(chunk)));
+            frame.support_pending = view.support_pending();
+            frame.temperatures = self.temperature.map(|z| {
+                let (w, h, _) = view.dims();
+                (
+                    z,
+                    (0..h)
+                        .flat_map(|y| (0..w).map(move |x| Pos3::new(x, y, z)))
+                        .map(|p| view.temperature(p))
+                        .collect(),
+                )
+            });
             let (residents, items, jobs) = view.counts();
             frame.stats = crate::frame::Stats {
                 tick: view.tick(),
@@ -497,6 +530,9 @@ fn run(
     let mut pause_at = None;
     let mut publisher = Publisher {
         versions: Vec::new(),
+        fluid_versions: Vec::new(),
+        fluid_scratch: Vec::new(),
+        temperature: None,
         scratch: Vec::new(),
         selected: None,
         inspect: None,
@@ -549,6 +585,7 @@ fn run(
                     };
                     mailbox.publish(|f| f.messages.push(text));
                     publisher.versions.clear();
+                    publisher.fluid_versions.clear();
                 }
                 Control::Load(path) => {
                     let text = match session.load(&path) {
@@ -557,10 +594,12 @@ fn run(
                     };
                     mailbox.publish(|f| f.messages.push(text));
                     publisher.versions.clear();
+                    publisher.fluid_versions.clear();
                 }
                 Control::Inspect(id) => publisher.inspect = id,
                 Control::Select(id) => publisher.selected = id,
                 Control::Regions(level) => publisher.regions = level,
+                Control::Temperature(level) => publisher.temperature = level,
                 Control::StopAt(tick) => stop_at = Some(tick),
                 Control::PauseAt(tick) => pause_at = Some(tick),
                 Control::Quit => {

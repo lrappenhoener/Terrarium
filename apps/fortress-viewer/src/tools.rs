@@ -138,6 +138,9 @@ pub enum Overlay {
     Path,
     Regions,
     Heatmap,
+    Temperature,
+    ActiveChunks,
+    Support,
 }
 
 /// Keys the viewer reacts to, independent of the graphics library.
@@ -171,6 +174,9 @@ pub enum Key {
     F3,
     F4,
     F5,
+    F6,
+    F7,
+    F8,
     F9,
 }
 
@@ -220,6 +226,9 @@ pub fn action_for_key(key: Key) -> Option<Action> {
         Key::F3 => Action::Overlay(Overlay::Regions),
         Key::F4 => Action::Overlay(Overlay::Heatmap),
         Key::F5 => Action::Save,
+        Key::F6 => Action::Overlay(Overlay::Temperature),
+        Key::F7 => Action::Overlay(Overlay::ActiveChunks),
+        Key::F8 => Action::Overlay(Overlay::Support),
         Key::F9 => Action::Load,
     })
 }

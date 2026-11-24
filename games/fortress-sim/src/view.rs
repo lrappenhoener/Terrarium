@@ -233,3 +233,48 @@ impl View<'_> {
         self.sim.seed
     }
 }
+
+impl View<'_> {
+    /// Version of a chunk's fluid data; fluids change without touching tiles.
+    pub fn fluid_chunk_version(&self, chunk: ChunkId) -> u32 {
+        self.sim.fluid.chunk_version(chunk)
+    }
+
+    /// Fluid bytes of a chunk in level, row, column order: units in bits 0 to 6
+    /// (16 per level), magma in bit 7.
+    pub fn chunk_fluids(&self, chunk: ChunkId, visit: impl FnMut(Pos3, &u8)) {
+        self.sim.fluid.for_each_in_chunk(chunk, visit);
+    }
+
+    /// Visible fluid level 0 to 7 and whether it is magma.
+    pub fn fluid(&self, p: Pos3) -> (u8, bool) {
+        let fluid = self.sim.fluid_at(p);
+        (crate::fluids::level(fluid), crate::fluids::is_magma(fluid))
+    }
+
+    pub fn temperature(&self, p: Pos3) -> i32 {
+        self.sim.temperature(p)
+    }
+
+    pub fn ambient(&self, z: i32) -> i32 {
+        self.sim.ambient(z)
+    }
+
+    /// Whether the fluid and heat systems simulate the chunk (debug overlay).
+    pub fn chunk_activity(&self, chunk: ChunkId) -> (bool, bool) {
+        (
+            self.sim.fluid_active.is_awake(chunk),
+            self.sim.heat.has(chunk),
+        )
+    }
+
+    /// Tiles waiting for a support check, for the endangered-area overlay.
+    pub fn support_pending(&self) -> Vec<Pos3> {
+        self.sim
+            .support
+            .pending()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
+    }
+}

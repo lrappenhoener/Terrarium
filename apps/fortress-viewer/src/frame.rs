@@ -49,6 +49,22 @@ pub struct Frame {
     pub description: Option<Vec<(String, String)>>,
     pub messages: Vec<String>,
     pub finished: bool,
+    /// Fluid chunk pool and dirty list, like the tile chunks.
+    pub fluid_chunks: Vec<ChunkFluids>,
+    pub fluid_dirty: Vec<u32>,
+    pub fluid_dirty_mark: Vec<bool>,
+    /// Absolute temperatures of one level, by `y * width + x`.
+    pub temperatures: Option<(i32, Vec<i32>)>,
+    /// Per chunk: fluid awake, heat active.
+    pub activity: Vec<(bool, bool)>,
+    pub support_pending: Vec<Pos3>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChunkFluids {
+    pub low: Pos3,
+    pub high: Pos3,
+    pub values: Vec<u8>,
 }
 
 impl Frame {
@@ -67,6 +83,10 @@ impl Frame {
             self.dirty_mark[chunk as usize] = false;
         }
         self.dirty.clear();
+        for &chunk in &self.fluid_dirty {
+            self.fluid_dirty_mark[chunk as usize] = false;
+        }
+        self.fluid_dirty.clear();
         self.messages.clear();
         self.description = None;
     }
@@ -77,6 +97,30 @@ impl Frame {
             self.chunks.resize_with(index + 1, ChunkTiles::default);
         }
         &mut self.chunks[index]
+    }
+
+    /// Copies a chunk's fluids into the pool and marks them dirty.
+    pub fn store_fluids(
+        &mut self,
+        chunk: u32,
+        low: Pos3,
+        high: Pos3,
+        values: impl Iterator<Item = u8>,
+    ) {
+        let index = chunk as usize;
+        if self.fluid_chunks.len() <= index {
+            self.fluid_chunks
+                .resize_with(index + 1, ChunkFluids::default);
+            self.fluid_dirty_mark.resize(index + 1, false);
+        }
+        let buffer = &mut self.fluid_chunks[index];
+        buffer.low = low;
+        buffer.high = high;
+        buffer.values.clear();
+        buffer.values.extend(values);
+        if !std::mem::replace(&mut self.fluid_dirty_mark[index], true) {
+            self.fluid_dirty.push(chunk);
+        }
     }
 
     /// Copies a chunk into the pool and marks it dirty.
@@ -125,6 +169,7 @@ impl Mailbox {
 pub struct Mirror {
     pub dims: (i32, i32, i32),
     tiles: Vec<Tile>,
+    fluids: Vec<u8>,
     pub original: Vec<Tile>,
     /// Bounds of every chunk received so far, by chunk ID.
     pub bounds: Vec<Option<(Pos3, Pos3)>>,
@@ -147,6 +192,7 @@ impl Mirror {
             },
             original,
             bounds: Vec::new(),
+            fluids: vec![0; len],
         }
     }
 
@@ -160,6 +206,14 @@ impl Mirror {
         self.index(p).map(|i| self.tiles[i])
     }
 
+    /// Visible fluid level 0 to 7 and whether it is magma.
+    pub fn fluid(&self, p: Pos3) -> (u8, bool) {
+        self.index(p).map_or((0, false), |i| {
+            let value = self.fluids[i];
+            ((value & 0x7f).div_ceil(16), value & 0x80 != 0)
+        })
+    }
+
     /// Whether the tile differs from the generated world, for example a built wall.
     pub fn is_built(&self, p: Pos3) -> bool {
         self.index(p)
@@ -167,6 +221,22 @@ impl Mirror {
     }
 
     pub fn apply(&mut self, frame: &Frame) {
+        for &chunk in &frame.fluid_dirty {
+            let Some(buffer) = frame.fluid_chunks.get(chunk as usize) else {
+                continue;
+            };
+            let mut values = buffer.values.iter();
+            for z in buffer.low.z..buffer.high.z {
+                for y in buffer.low.y..buffer.high.y {
+                    for x in buffer.low.x..buffer.high.x {
+                        if let (Some(i), Some(v)) = (self.index(Pos3::new(x, y, z)), values.next())
+                        {
+                            self.fluids[i] = *v;
+                        }
+                    }
+                }
+            }
+        }
         for &chunk in &frame.dirty {
             let Some(buffer) = frame.chunks.get(chunk as usize) else {
                 continue;

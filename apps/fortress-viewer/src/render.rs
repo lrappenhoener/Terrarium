@@ -48,6 +48,9 @@ pub struct Overlays {
     pub path: bool,
     pub regions: bool,
     pub heatmap: bool,
+    pub temperature: bool,
+    pub active: bool,
+    pub support: bool,
 }
 
 impl Overlays {
@@ -57,6 +60,9 @@ impl Overlays {
             Overlay::Path => &mut self.path,
             Overlay::Regions => &mut self.regions,
             Overlay::Heatmap => &mut self.heatmap,
+            Overlay::Temperature => &mut self.temperature,
+            Overlay::ActiveChunks => &mut self.active,
+            Overlay::Support => &mut self.support,
         };
         *flag = !*flag;
     }
@@ -191,6 +197,75 @@ pub fn draw_world(
                 }
             } else {
                 draw_tile(tile, mirror.is_built(p), materials, sx, sy, s, 1.0);
+            }
+        }
+    }
+    // Fluids: water blue, magma orange, opacity and digit by level.
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (level, magma) = mirror.fluid(Pos3::new(x, y, z));
+            if level == 0 {
+                continue;
+            }
+            let (sx, sy) = camera.tile_to_screen(x as f32, y as f32, screen);
+            let alpha = 0.25 + 0.09 * f32::from(level);
+            let color = if magma {
+                Color::new(1.0, 0.45, 0.05, alpha)
+            } else {
+                Color::new(0.15, 0.4, 1.0, alpha)
+            };
+            draw_rectangle(sx, sy, s, s, color);
+            if s >= 14.0 {
+                draw_text(
+                    level.to_string(),
+                    sx + s * 0.3,
+                    sy + s * 0.75,
+                    s * 0.8,
+                    WHITE,
+                );
+            }
+        }
+    }
+    if overlays.temperature
+        && let Some((level, temperatures)) = &frame.temperatures
+        && *level == z
+    {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if let Some(&t) = temperatures.get((y * w + x) as usize) {
+                    let heat = ((t - 10) as f32 / 150.0).clamp(0.0, 1.0);
+                    if heat > 0.05 {
+                        let (sx, sy) = camera.tile_to_screen(x as f32, y as f32, screen);
+                        draw_rectangle(sx, sy, s, s, Color::new(1.0, 0.1, 0.0, 0.15 + 0.6 * heat));
+                    }
+                }
+            }
+        }
+    }
+    if overlays.active {
+        for (chunk, bounds) in mirror.bounds.iter().enumerate() {
+            let Some((low, high)) = *bounds else { continue };
+            let Some(&(fluid, heat)) = frame.activity.get(chunk) else {
+                continue;
+            };
+            if !(low.z..high.z).contains(&z) || !(fluid || heat) {
+                continue;
+            }
+            let (sx, sy) = camera.tile_to_screen(low.x as f32, low.y as f32, screen);
+            let (width, height) = ((high.x - low.x) as f32 * s, (high.y - low.y) as f32 * s);
+            let color = if heat {
+                Color::new(1.0, 0.3, 0.2, 0.9)
+            } else {
+                Color::new(0.3, 0.6, 1.0, 0.9)
+            };
+            draw_rectangle_lines(sx, sy, width, height, 3.0, color);
+        }
+    }
+    if overlays.support {
+        for p in &frame.support_pending {
+            if p.z == z {
+                let (sx, sy) = camera.tile_to_screen(p.x as f32, p.y as f32, screen);
+                draw_rectangle_lines(sx, sy, s, s, 2.0, Color::new(1.0, 0.0, 1.0, 1.0));
             }
         }
     }

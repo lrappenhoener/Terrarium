@@ -302,6 +302,9 @@ async fn main() {
         path: true,
         regions: false,
         heatmap: false,
+        temperature: false,
+        active: false,
+        support: false,
     };
     let mut description: Option<Vec<(String, String)>> = None;
     let mut inspected_tile: Option<Pos3> = None;
@@ -417,6 +420,9 @@ async fn main() {
         if overlays.regions {
             let _ = control.send(Control::Regions(Some(camera.level)));
         }
+        let _ = control.send(Control::Temperature(
+            overlays.temperature.then_some(camera.level),
+        ));
 
         // Mouse.
         let mouse = mouse_position();
