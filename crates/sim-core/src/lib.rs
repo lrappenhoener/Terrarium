@@ -13,6 +13,7 @@ pub mod rng;
 pub mod schedule;
 pub mod space;
 pub mod state;
+pub mod support;
 pub mod topology;
 
 #[cfg(test)]
