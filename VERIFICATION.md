@@ -231,3 +231,39 @@ level z=2 tick=20000
     - Für Einstürze eine Stützberechnung als abgeleitete Struktur mit Union-Find wie bei der Erreichbarkeit, inklusive Test gegen vollständige Neuberechnung.
     - Bewegungsregeln mit Kosten oder Sperren durch Flüssigkeit.
     - Chunk-Diff-Snapshots, die den bereits vorhandenen Diff gegen die generierte Welt chunkweise ablegen.
+
+## Etappe 4 – Viewer und Sandbox: Abschlussbericht
+
+`scripts/ci.sh` lief mit Exit 0. Geprüft wurden fmt, striktes Clippy und je 289 Tests in Debug und Release (zusammen). Dazu kamen Dummy-, Jungle- und Fortress-Läufe mit Determinismus, Save/Load, Replays und `--max-step-allocs 0`, ein hierarchischer Lauf, Build und Tests des Viewers ohne Fenster sowie die `release-checked`-Langläufe. `cargo build --release -p fortress-viewer` war erfolgreich.
+
+0. **Schritt 0**
+   - **Gegenstandssuchen:** Nahrung, Steine für Baustellen und Belegungsprüfungen laufen über `sim_core::index::CategoryIndex` (Chunk × Kategorie, intrusive Listen ohne Allokation). Die Abfrage liefert das Minimum von `(Distanz, ID)` wie der vollständige Scan; ein Pflichttest vergleicht nach zufälligen Änderungen (4 Seeds) mit Brute Force. Die Lagerzählung und die Belegungsliste der Arbeitsphase sind Momentaufnahmen und keine Suchen; sie bleiben lineare Durchläufe pro Tick. Die Fortress-Golden-Hashes sind unverändert: A* `0x0647c8823c28e430`, hierarchisch `0x000538f6ea0f8d1e`, Golden Snapshot unverändert.
+   - **Sweep ohne Verhungern:** siehe `BENCHMARKS.md`. Ursache der 81 Toten war ein Fehler: Spawn-Plätze auf unerreichbaren Klippen. Danach gibt es 0 Tote, und `needs` kostet konstant 5–6 ns pro Bewohner und Tick. `initial_food_per_resident` (Standard 0) skaliert die Startnahrung; die Karawane war bereits pro Bewohner konfigurierbar.
+   - **„797 gegen 742“:** 797 TPS gehörten zum neueren Stand. Mit `scripts/bench-ab.sh` (5 abwechselnde Paare und Callgrind) ergaben sich −0,85 % TPS bei +0,076 % Instruktionen, also keine Regression.
+   - **Generator-Fingerabdruck:** Nutzlast v2 mit `GENERATOR_VERSION` und Hash aller Generator-Eingaben. Bei Abweichung meldet das Laden „Weltgenerator geändert: Version 7 → 1“ (Test). v1-Snapshots laden mit Warnung über den neuen `sim-host`-Hook `load_warnings`.
+   - **Lange Wege:** HPA* halbiert p99 (236 gegen 470 µs) und senkt die Spitzen von 2,96 auf 1,08 ms. Die Wege sind dabei 4,4 % teurer. Empfehlung: hierarchisch ab mehrchunkigen Wegen über etwa 100 Knoten. Der Standard bleibt A*.
+   - **HPA-Hash-Plausibilität:** Die Subsystem-Hashes des hierarchischen Laufs sind unauffällig (`world 9e7c7670a709397d`, `residents b095222b177e4688`, `items 0180dacac8126d09`, `jobs b257712cfae35175`, `meta 330b7001f851fba1`). `world` ist in beiden Modi identisch, Tick 1.999 hat `0xecc32486df1cfee3`. Die drei führenden Nullen sind Zufall (Wahrscheinlichkeit 1/4.096).
+   - **CI:** `.github/workflows/ci.yml` (Linux, Windows, macOS ARM; Hash-Vergleich der Plattformen; nächtliche `release-checked`-Läufe). actionlint meldet 0 Fehler (shellcheck war nicht installiert). Ohne Remote konnte der Workflow nicht ausgeführt werden; die Anleitung steht in `README.md`.
+1. **Architektur:** `sim-io` übernimmt Container, Replays und Configs aus dem Runner; Formate, Meldungen und Exit-Codes sind unverändert. `fortress_sim::view` ist die rein lesende Schnittstelle; ein Pflichttest fragt sie in jedem Tick vollständig ab, und alle Hashes bleiben gleich. Im Viewer besitzt ein eigener Simulations-Thread die Simulation. Er wendet Commands an dem Tick an, an dem sie ausgeführt werden, zeichnet jede Sitzung als Replay auf und veröffentlicht zusammengeführte Chunk-Änderungen in ein Postfach mit einem Platz. Der UI-Thread spiegelt die Welt und zeichnet mit `macroquad`. Bedienung: `apps/fortress-viewer/README.md`.
+2. **Overhead:** Die reine Step-Zeit im Viewer entspricht headless (19.658 gegen 19.831 TPS, p99 168 gegen 161 µs). Die Wanduhr-TPS liegen bei 10.742 gegen 11.090.
+3. **Speichern:** 25–40 kB. Speichern dauert 15–23 ms, Laden 33 ms, ein Autosave 21–23 ms (alle 6.000 Ticks).
+4. **Viewer-Replay im Runner:** Zwei Integrationstests (Skript aus UI-Aktionen bzw. Laden mitten in der Sitzung mit eingebettetem Snapshot) werden vom Runner mit `Replay OK` und gleichem End-Hash reproduziert. Ein echtes Fenster-Replay über 20.000 Ticks spielte im Runner mit `Replay OK` und `0xae5ee3d9cc6dbcc2` ab.
+5. **Referenzen:** Jungle `0x5317cfd6e2e12024` und `0x19eb3e87d333006d`, Dummy `0x20f21cbeee53c309`, Fortress-Golden-Hashes beider Modi und alle Golden Snapshots sind unverändert. Der 20.000-Tick-Lauf des Szenarios bleibt `0xae5ee3d9cc6dbcc2`.
+6. **Screenshots:** `apps/fortress-viewer/docs/tick5000-z14.png` (Tunnel-Ebene) und `tick5000-z5.png` (tiefe Halle), erstellt mit `--screenshot-at-tick 5000 … --exit-after-screenshot` unter Wayland/Xwayland.
+7. **Entscheidungen und Abweichungen**
+   - Replays mit Abschlussdatensatz `Finished` enden für die Wiedergabe beim Tick dieses Datensatzes, weil Client-Sitzungen ihr Ende beim Start nicht kennen.
+   - `sim-host` erhält `min_snapshot_version` und `load_warnings` mit Defaults (CHANGELOG).
+   - Das Lange-Wege-Szenario braucht eine eigene Config (48 Ebenen), weil die Standardwelt unter dem Tunnel nur 14 Ebenen hat.
+   - Neue Fehlerkorrekturen ohne Hash-Änderung im Standardszenario:
+     - Spawn-Plätze müssen erreichbar sein.
+     - Ablagen auf vollen Lagern suchen weiter.
+     - Lagerzonen über gestapelten Kacheln werden abgelehnt.
+     - Spawns auf Lagerplätzen beachten deren Kapazität.
+   - Das Postfach ersetzt einen Kanal mit fester Länge: Es fasst Updates zusammen und tauscht Puffer.
+   - Der Text nutzt die in `macroquad` eingebaute Schrift.
+8. **Beobachtungen beim Zuschauen** (nicht behoben)
+   - Sobald das Lager voll ist, bleiben Steine dauerhaft in Tunneln und Hallen liegen (z=5 ist vollständig belegt), und Hunderte Transportjobs stehen offen, ohne bearbeitbar zu sein.
+   - Untätige Bewohner sammeln sich im Lager und an der Lagerzone in der Halle; es gibt keine Freizeit- oder Rückzugsaktion.
+   - Bewohner arbeiten große Grabflächen von einer Kante her ab und stehen dabei in Reihen auf derselben Kachelspalte (geteilte Kacheln).
+   - Nahrung der Karawane stapelt sich auf wenigen Randkacheln.
+   - Gebaute Mauern lassen sich nur über den Generatorvergleich von Naturfels unterscheiden; das Material verrät es nicht.

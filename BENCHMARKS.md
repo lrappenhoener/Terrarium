@@ -177,3 +177,78 @@ HPA*-Caches: 561 Chunk-Neuberechnungen gegenüber 16.423 Treffern und 2.742 Flä
 | hierarchisch | 400, 192 | 7.098 | – | 752,61 | 121,9 | – | – | 13,1 % | – | – |
 
 Entitäten umfassen Gegenstände. Von 25 auf 400 Bewohner bei vierfacher Kachelzahl steigen die Kosten pro Entität und Tick um 35 % (A*). Einzig `needs` skaliert nicht: Bei 400 Bewohnern reichen die 60 Startrationen nicht, viele sind gleichzeitig hungrig (81 verhungern), und jeder durchsucht die Liste freier Nahrung. Das kostet O(Hungrige × Nahrung) pro Tick. `connectivity` bleibt niedrig, weil Flutfüllungen selten sind; ihre Kosten wachsen mit der Oberflächenregion, also quadratisch mit der Seitenlänge.
+
+## Etappe 4 – Viewer, Index, Sweep ohne Verhungern
+
+Gemessen am 24.11.2026 auf `zen` (AMD Ryzen 7 9800X3D), Rust 1.97.1, Release-Profil. Absolute Zahlen sind nur informativ; Vergleiche zwischen Ständen laufen über `scripts/bench-ab.sh`.
+
+### Klärung „797 gegen 742 TPS“ und A/B-Nachmessung
+
+In Etappe 3 gehörten 797 TPS zum damaligen Stand (`ad5c637`) und 742 TPS zum Etappe-2-Commit `784c63e`. Der neuere Stand war also nicht der langsamere. Beide Werte stammen aus einer gestörten Sitzung, in der die Maschine allgemein langsamer lief (Jungle sonst ≈1.450 TPS). Nachmessung mit `scripts/bench-ab.sh 784c63e ad5c637 --game jungle --ticks 5000`, 5 abwechselnde Paare:
+
+| Stand | TPS Median | Min | Max | p99 µs Median | Instruktionen (500 Ticks) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A `784c63e` (Etappe 2) | 1.454,87 | 1.454,05 | 1.456,47 | 807,72 | 4.625.304.493 |
+| B `ad5c637` (Etappe 3) | 1.442,51 | 1.426,87 | 1.444,76 | 824,57 | 4.628.803.063 |
+
+B liegt bei −0,85 % TPS und +2,09 % p99, die Instruktionszahl unterscheidet sich um +0,076 %. Etappe 3 hat im Jungle-Step keine Regression; der kleine konstante Zeitunterschied bei fast gleichen Instruktionen ist ein Code-Layout-Effekt.
+
+### Sweep vor und nach Index und Spawn-Korrektur (5.000 Ticks, A*, Median aus 3)
+
+| Stand | Bewohner, Seitenlänge | TPS | p99 µs | ns/Entität/Tick | `needs` Anteil | `needs` ns/Bewohner/Tick | Hungertote |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Etappe 3 | 25, 96 | 26.006 | 154,27 | 73,78 | 1,7 % | – | 0 |
+| Etappe 3 | 100, 128 | 16.276 | 265,52 | 94,46 | 3,4 % | – | 0 |
+| Etappe 3 | 400, 192 | 8.662 | 666,65 | 99,87 | 17,4 % | – | 81 |
+| nur Index | 400, 192 | 7.349 | 609,97 | 117,70 | 36,1 % | 135,99 | 81 |
+| Index + Spawn-Korrektur, 60 Startrationen | 25, 96 | 44.399 | 82,63 | 43,22 | 0,6 % | 5,73 | 0 |
+| Index + Spawn-Korrektur, 60 Startrationen | 100, 128 | 28.397 | 155,52 | 54,14 | 1,4 % | 4,91 | 0 |
+| Index + Spawn-Korrektur, 60 Startrationen | 400, 192 | 16.904 | 455,50 | 52,31 | 3,8 % | 5,65 | 0 |
+| zusätzlich 3 Rationen pro Bewohner | 25, 96 | 44.757 | 81,43 | 41,96 | 0,6 % | 5,63 | 0 |
+| zusätzlich 3 Rationen pro Bewohner | 100, 128 | 21.926 | 180,47 | 51,06 | 1,1 % | 5,17 | 0 |
+| zusätzlich 3 Rationen pro Bewohner | 400, 192 | 5.776 | 546,80 | 76,89 | 1,3 % | 5,56 | 0 |
+
+Die Hungertoten kamen nicht von zu wenig Nahrung: Bei 400 Bewohnern reichte die Spawn-Spirale auf die Klippen des Bergs, und genau 81 Bewohner standen unerreichbar von der Nahrung. Seit der Korrektur sterben keine Bewohner mehr. `needs` kostet pro Bewohner konstant 5–6 ns und skaliert damit linear. Mit 1.600 Startrationen dominiert `job_assign` (78 %): Für jede lose Ration besteht ein Transportjob, und das Lager ist voll.
+
+### Lange Wege (`scenario_long_haul.toml`, 20.000 Ticks, Median aus 3)
+
+Konfiguration `long_haul_config.toml` (48 Ebenen, 40 Bewohner). Schacht über 32 Ebenen, Abbau auf z=3, Lager an der Oberfläche, Baustellen östlich des Bergs. 21,5 % aller Wege haben mindestens 100 Knoten, im Mittel 121.
+
+| Modus | TPS | p50 µs | p99 µs | Max µs | `path` p99 µs | `path` Max µs | `path` Anteil | Expansionen/Suche | Ø Kosten | Ø Knoten |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A* | 22.155 | 32,68 | 470,25 | 2.960 | 412,5 | 2.830 | 30,4 % | 463,5 | 592,0 | 48,04 |
+| hierarchisch | 23.742 | 34,38 | 235,60 | 1.080 | 153,1 | 958 | 26,4 % | 293,3 | 617,9 (+4,4 %) | 49,83 |
+
+Worst-Ticks: Bei A* trifft es deterministisch Tick 9.001 (2,9–3,0 ms, nach der Designation bei Tick 9.000 suchen viele Arbeiter gleichzeitig) und Tick 1 (2,0–2,6 ms, erste Suchen). Hierarchisch liegt der langsamste Tick 6.002 bei ≈1,1 ms. Es gab weder `Unreachable` noch `BudgetExceeded` oder Fallbacks.
+
+**Empfehlung:** Hierarchisch lohnt sich, sobald typische Wege mehrere Chunks und Ebenen überspannen (hier ab etwa 100 Knoten bzw. mehr als 20 Ebenen Höhendifferenz). Es halbiert p99 und drittelt die Spitzen bei 4–5 % längeren Wegen. Bei kurzen Wegen (Standard-Szenario, ≈14 Knoten) gewinnt A*. Der Standard bleibt `astar`.
+
+### Viewer-Overhead (Standard-Szenario, 20.000 Ticks, Maximalgeschwindigkeit, Median aus 3)
+
+| Lauf | reine Step-TPS | p99 µs | Wanduhr-TPS |
+| --- | ---: | ---: | ---: |
+| Runner headless | 19.831 | 161,01 | 11.090 (inkl. Hash-Checkpoints und Invarianten alle 100 Ticks) |
+| Viewer | 19.658 | 167,90 | 10.742 (inkl. Replay, Checkpoint-Hashes, Frame-Updates, 3 Autosaves) |
+
+Der Simulationsschritt kostet im Viewer-Thread gleich viel wie headless (−0,9 %, Rauschen). Die Differenz der Wanduhr-TPS fällt außerhalb von `step` an: Replay-Checkpoints hashen die Welt alle 100 Ticks, dazu kommen Frame-Kopien höchstens alle 15 ms und die Autosaves.
+
+### Speichern und Laden (Viewer-Session, Standard-Szenario)
+
+| Vorgang | Tick | Größe | Dauer |
+| --- | ---: | ---: | ---: |
+| Autosave | 6.000 | 25.262 B | 22,4 ms |
+| Autosave | 12.000 | 28.174 B | 21,4 ms |
+| Autosave | 18.000 | 39.086 B | 22,9 ms |
+| Speichern (Median aus 3) | 20.000 | 39.735 B | 15,0 ms |
+| Laden (Median aus 3) | 20.000 | 39.735 B | 33,2 ms |
+
+Speichern und Laden erzeugen die Welt neu, um Kacheln gegen den Generator zu differenzieren, und verwenden ein synchronisiertes Schreiben. Bei 1× (50 ms pro Tick) bleibt ein Autosave unter einem Tick.
+
+### A/B Etappe 3 (`ad5c637`) gegen Etappe 4
+
+| Lauf | TPS A | TPS B | Δ TPS | Δ p99 | Δ Instruktionen | Hash |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Jungle, 5.000 Ticks | 894,0 | 905,3 | +1,27 % | +1,55 % | +0,000 % (500 Ticks) | `0x19eb3e87d333006d` (beide) |
+| Fortress, Szenario, 20.000 Ticks | 16.005 | 20.233 | +26,42 % | −10,14 % | −5,328 % (2.000 Ticks) | `0xae5ee3d9cc6dbcc2` (beide) |
+
+Bei Jungle sind die Instruktionen identisch; der TPS-Unterschied ist Rauschen. Die absolute Jungle-Rate lag in dieser Sitzung bei ≈900 statt ≈1.450 TPS, ein Beispiel für die Schwankungen zwischen Sitzungen. Fortress gewinnt durch den Kategorie-Index bei unverändertem Verhalten.
