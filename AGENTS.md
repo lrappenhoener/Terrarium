@@ -79,6 +79,7 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Der Allokationszähler erfasst nur den ausführenden Thread. Vor der Einführung paralleler Steps muss die Messung auch Worker-Threads erfassen.
 - Release verwendet keine globalen Overflow-Checks. Der Standardbenchmark zeigte 4,78 % Mehrkosten. Langlaufzähler und Zeitgrenzen verwenden explizite Sättigung, IDs und Ereignisfolgen geprüfte Nachfolger und der PRNG explizites Wrapping. In Hot Paths bleiben arithmetische Operationen mit Grenzen aus geprüften Dimensionen, Kapazitäten und Wertebereichen zulässig. Bei Änderungen diese Grenzen erneut prüfen.
 - Neue Benchmark-Zahlen in `BENCHMARKS.md` sind Mediane aus mindestens drei Läufen.
+- Performance-Vergleiche zwischen Ständen nur als A/B in derselben Sitzung mit `scripts/bench-ab.sh` (abwechselnde Läufe, Callgrind-Instruktionen, falls `valgrind` verfügbar). Absolute Zahlen in `BENCHMARKS.md` sind nur informativ und tragen Datum und Rechner.
 - Performance-Ruckler mit `--worst-ticks` untersuchen. `scripts/ci.sh` muss vor Abschluss erfolgreich sein. `release-checked` aktiviert Overflow-Checks für Langläufe.
 
 ## Snapshots und Replays
