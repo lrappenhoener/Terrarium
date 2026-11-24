@@ -269,6 +269,8 @@ pub struct FortressSim {
     slot_zone: Vec<u32>,
     /// Derived: items lying directly on each stockpile tile.
     slot_items: Vec<u32>,
+    /// Derived: the single item on a stockpile tile when known.
+    slot_item: Vec<Option<ItemId>>,
     /// Zones in ascending ID order.
     zones: Vec<Zone>,
     next_zone: u32,
@@ -551,6 +553,7 @@ impl FortressSim {
             stockpiles: Vec::with_capacity(STOCKPILE_CAPACITY),
             slot_zone: Vec::with_capacity(STOCKPILE_CAPACITY),
             slot_items: Vec::with_capacity(STOCKPILE_CAPACITY),
+            slot_item: Vec::with_capacity(STOCKPILE_CAPACITY),
             zones: Vec::with_capacity(STOCKPILE_CAPACITY),
             next_zone: 0,
             ground_at: vec![None; items as usize],
@@ -899,6 +902,7 @@ impl FortressSim {
         self.contents.clear();
         self.ground_at.fill(None);
         self.slot_items.fill(0);
+        self.slot_item.fill(None);
         let ids: Vec<ItemId> = self.items.iter_by_id().collect();
         for &id in &ids {
             if let Some(slot) = self.islot(id)

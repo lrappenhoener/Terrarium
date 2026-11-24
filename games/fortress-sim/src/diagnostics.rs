@@ -473,6 +473,7 @@ impl FortressSim {
             return fail("stockpile tiles are not sorted and unique");
         }
         if self.slot_zone.len() != self.stockpiles.len()
+            || self.slot_item.len() != self.stockpiles.len()
             || self.slot_items.len() != self.stockpiles.len()
             || self.zones.windows(2).any(|pair| pair[0].id >= pair[1].id)
             || self.zones.iter().any(|z| {

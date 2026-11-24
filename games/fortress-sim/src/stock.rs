@@ -81,8 +81,11 @@ impl FortressSim {
         }
         if let Some(i) = before.and_then(|p| self.slot_index(p)) {
             self.slot_items[i] -= 1;
+            // The remaining item, if any, is unknown here; lookups fall back to the index.
+            self.slot_item[i] = None;
         }
         if let Some(i) = now.and_then(|p| self.slot_index(p)) {
+            self.slot_item[i] = (self.slot_items[i] == 0).then_some(id);
             self.slot_items[i] += 1;
         }
     }
@@ -102,6 +105,22 @@ impl FortressSim {
 
     /// The unreserved container with room on `p`, lowest ID first.
     pub(crate) fn slot_container(&self, p: Pos3) -> Option<ItemId> {
+        if let Some(i) = self.slot_index(p) {
+            if self.slot_items[i] == 0 {
+                return None;
+            }
+            if let (1, Some(id)) = (self.slot_items[i], self.slot_item[i]) {
+                let s = self.islot(id)?;
+                let room = self
+                    .content
+                    .item(self.icols.kind[s].0)
+                    .is_some_and(|d| self.contents.count(id.index) < u32::from(d.capacity));
+                return (self.icols.location[s] == ItemLocation::Ground(p)
+                    && room
+                    && !self.reservations.is_reserved(ResKey::Item(id)))
+                .then_some(id);
+            }
+        }
         let mut best: Option<ItemId> = None;
         for category in 0..self.content.categories.len() as u8 {
             self.item_index.for_each_at(p, category, |id| {
@@ -438,6 +457,7 @@ impl FortressSim {
                 self.stockpiles.insert(at, p);
                 self.slot_zone.insert(at, zone);
                 self.slot_items.insert(at, count);
+                self.slot_item.insert(at, None);
                 added += 1;
             } else {
                 rejected += 1;
@@ -465,12 +485,14 @@ impl FortressSim {
                 self.stockpiles[write] = self.stockpiles[read];
                 self.slot_zone[write] = self.slot_zone[read];
                 self.slot_items[write] = self.slot_items[read];
+                self.slot_item[write] = self.slot_item[read];
                 write += 1;
             }
         }
         self.stockpiles.truncate(write);
         self.slot_zone.truncate(write);
         self.slot_items.truncate(write);
+        self.slot_item.truncate(write);
         let slot_zone = &self.slot_zone;
         self.zones.retain(|z| slot_zone.contains(&z.id));
     }

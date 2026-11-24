@@ -296,6 +296,7 @@ impl FortressSim {
         }
         // Extend the reserved buffers so later inserts do not allocate in a step.
         sim.slot_items.resize(state.stockpiles.len(), 0);
+        sim.slot_item.resize(state.stockpiles.len(), None);
         sim.stockpiles.extend(state.stockpiles);
         sim.slot_zone.extend(state.slot_zone);
         sim.zones.extend(state.zones);
