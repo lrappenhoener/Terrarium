@@ -340,6 +340,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-io"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "sim-host",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "sim-runner"
 version = "0.1.0"
 dependencies = [
@@ -352,6 +364,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sim-host",
+ "sim-io",
  "thiserror",
  "toml",
 ]

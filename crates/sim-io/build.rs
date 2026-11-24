@@ -41,5 +41,5 @@ fn main() {
             id
         },
     );
-    println!("cargo:rustc-env=SIM_RUNNER_BUILD_ID={id}");
+    println!("cargo:rustc-env=SIM_IO_BUILD_ID={id}");
 }

@@ -572,3 +572,55 @@ impl Simulation for Panicking {
         Ok(())
     }
 }
+
+/// Saves without state and loads a fixed state, so every reload differs.
+struct Forgetful(u64);
+
+impl Simulation for Forgetful {
+    type Config = ();
+    type Command = ();
+    fn new(_: u64, _: ()) -> Result<Self, SimError> {
+        Ok(Self(7))
+    }
+    fn step(&mut self, _: &[()]) {
+        self.0 += 1;
+    }
+    fn tick(&self) -> u64 {
+        self.0
+    }
+    fn is_finished(&self) -> bool {
+        false
+    }
+    fn metrics(&self) -> SimMetrics {
+        SimMetrics {
+            active_entities: 0,
+            custom_gauges: Vec::new(),
+        }
+    }
+    fn state_hash(&self) -> u64 {
+        self.0
+    }
+    fn check_invariants(&self) -> Result<(), SimError> {
+        Ok(())
+    }
+    fn snapshot_version() -> u32 {
+        1
+    }
+    fn save_snapshot(&self, out: &mut Vec<u8>) -> Result<(), SimError> {
+        out.push(0);
+        Ok(())
+    }
+    fn load_snapshot(_: &[u8]) -> Result<Self, SimError> {
+        Ok(Self(7))
+    }
+}
+
+#[test]
+fn save_load_detects_an_immediate_difference() {
+    let error = reload(&options(), Forgetful(8)).err().unwrap();
+    assert!(matches!(
+        error,
+        RunnerError::SaveLoadMismatch { tick: 8, .. }
+    ));
+    assert!(error.to_string().contains("immediately after loading"));
+}

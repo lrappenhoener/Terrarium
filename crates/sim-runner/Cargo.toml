@@ -11,6 +11,7 @@ dummy-sim.workspace = true
 fortress-sim.workspace = true
 jungle-sim.workspace = true
 serde.workspace = true
+sim-io.workspace = true
 serde_json.workspace = true
 sim-host.workspace = true
 thiserror.workspace = true

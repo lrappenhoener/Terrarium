@@ -79,6 +79,18 @@ pub enum RunnerError {
     SimulationPanic { tick: u64, message: String },
 }
 
+impl From<sim_io::Error> for RunnerError {
+    fn from(error: sim_io::Error) -> Self {
+        match error {
+            sim_io::Error::Io { context, source } => Self::Io { context, source },
+            sim_io::Error::Parse { path, source } => Self::Parse { path, source },
+            sim_io::Error::UnsupportedFormat(path) => Self::UnsupportedFormat(path),
+            sim_io::Error::Sim(error) => Self::Sim(error),
+            sim_io::Error::InvalidOptions(message) => Self::InvalidOptions(message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum ReportFormat {
     Text,
@@ -155,7 +167,7 @@ impl<C: Clone> Start<C> {
     fn instantiate<S: Simulation<Config = C>>(&self, opts: &RunOptions) -> Result<S, RunnerError> {
         match self {
             Self::New(config) => Ok(S::new(opts.seed, config.clone())?),
-            Self::Snapshot(data, _) => container::restore::<S>(&opts.game, data),
+            Self::Snapshot(data, _) => Ok(container::restore::<S>(&opts.game, data)?),
         }
     }
 
@@ -576,7 +588,7 @@ fn run_pass<S: Simulation>(
     schedule: &[ScheduleEntry<S::Command>],
     mut diagnostics: Option<&mut dyn Write>,
     pass: Pass<'_>,
-    replay_writer: &mut Option<replay::ReplayWriter>,
+    replay_writer: &mut Option<sim_io::replay::ReplayWriter>,
 ) -> Result<CompletedRun, RunnerError> {
     let wall_start = Instant::now();
     let loading = Instant::now();
@@ -588,7 +600,7 @@ fn run_pass<S: Simulation>(
         && let Some(path) = &opts.artifacts.record_replay
     {
         let header = container::Header::capture(&opts.game, start.seed(opts.seed), &sim);
-        *replay_writer = Some(replay::ReplayWriter::create::<S>(
+        *replay_writer = Some(replay::create_writer::<S>(
             path,
             opts,
             start,
@@ -760,7 +772,7 @@ fn run_pass<S: Simulation>(
                     pass.retain_snapshots,
                 )?;
                 if let Some(writer) = replay_writer.as_mut() {
-                    writer.checkpoint(&point)?;
+                    writer.checkpoint(point.tick, point.hash, &point.subsystems)?;
                 }
                 checkpoints.push(point);
             }
@@ -785,7 +797,7 @@ fn run_pass<S: Simulation>(
             pass.retain_snapshots,
         )?;
         if let Some(writer) = replay_writer.as_mut() {
-            writer.checkpoint(&point)?;
+            writer.checkpoint(point.tick, point.hash, &point.subsystems)?;
         }
         checkpoints.push(point);
     }
