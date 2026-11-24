@@ -458,3 +458,41 @@ impl FortressSim {
         })
     }
 }
+
+impl FortressSim {
+    /// Scatters `initial_stock_items` stones on dry surface floors, drawn per item
+    /// from the stateless random source.
+    pub(crate) fn scatter_stock(&mut self) {
+        let stone = GameContentStone::stone(self);
+        let Some((kind, material)) = stone else {
+            return;
+        };
+        let size = self.config.world_size_xy as u64;
+        let mut placed = 0;
+        let mut attempt = 0u64;
+        while placed < self.config.initial_stock_items
+            && attempt < u64::from(self.config.initial_stock_items) * 4
+        {
+            let roll = stateless_u64(self.seed, attempt, 0, 0x73746f6b);
+            attempt += 1;
+            let (x, y) = (below(roll, size) as i32, below(roll >> 20, size) as i32);
+            let p = Pos3::new(x, y, world::surface(self.seed, &self.config, x, y));
+            if self.world.get(p).is_some_and(|t| standable(*t)) && self.fluid_at(p) == 0 {
+                if self.spawn_item(p, ItemKind(kind), material, 1, 0).is_none() {
+                    return;
+                }
+                placed += 1;
+            }
+        }
+    }
+}
+
+struct GameContentStone;
+
+impl GameContentStone {
+    fn stone(sim: &FortressSim) -> Option<(u16, u16)> {
+        let material = *sim.content.rocks.first()?;
+        let kind = sim.content.material(material)?.dig_item?;
+        Some((kind, material))
+    }
+}

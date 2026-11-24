@@ -1885,9 +1885,10 @@ impl FortressSim {
         self.scratch
             .occupied
             .extend(self.rcols.position.iter().copied());
-        for slot in 0..self.icols.len() {
-            if let ItemLocation::Ground(p) = self.icols.location[slot] {
-                self.scratch.occupied.push(p);
+        // Only build targets are checked against this snapshot; items count there.
+        for job in self.jobs.iter() {
+            if matches!(job.data, JobKind::Build(_)) && self.count_ground_items(job.pos) > 0 {
+                self.scratch.occupied.push(job.pos);
             }
         }
         self.scratch.occupied.sort_unstable();
@@ -2448,6 +2449,7 @@ impl Simulation for FortressSim {
                 sim.spawn_item(at, ItemKind(kind), material, start.amount, 0);
             }
         }
+        sim.scatter_stock();
         sim.plant_initial_trees();
         if sim.config.caravan {
             sim.events.push(sim.config.caravan_interval, Event::Caravan);

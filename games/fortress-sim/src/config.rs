@@ -160,6 +160,8 @@ pub struct FortressConfig {
     /// Whether caravans bring food; farms make them unnecessary.
     pub caravan: bool,
     pub initial_items: Vec<StartItems>,
+    /// Loose stones scattered on surface floors at the start, for scaling runs.
+    pub initial_stock_items: u32,
     /// Bounds of each item search in the category index: chunk cells and items.
     pub item_search_cells: u32,
     pub item_search_candidates: u32,
@@ -220,6 +222,7 @@ impl Default for FortressConfig {
             plant_interval: 50,
             farm_interval: 32,
             caravan: true,
+            initial_stock_items: 0,
             initial_items: vec![
                 StartItems {
                     item: "cave_mushroom_spawn".into(),
@@ -372,6 +375,7 @@ impl FortressConfig {
             hash.write_u64(value);
         }
         hash.write_bool(self.caravan);
+        hash.write_u32(self.initial_stock_items);
         hash.write_usize(self.initial_items.len());
         for start in &self.initial_items {
             hash.write_bytes(start.item.as_bytes());

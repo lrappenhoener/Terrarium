@@ -88,7 +88,7 @@ impl FortressSim {
     }
 
     /// Items lying directly on `p`, by their derived ground positions.
-    fn count_ground_items(&self, p: Pos3) -> u32 {
+    pub(crate) fn count_ground_items(&self, p: Pos3) -> u32 {
         let mut count = 0;
         for category in 0..self.content.categories.len() as u8 {
             self.item_index.for_each_at(p, category, |id| {
@@ -167,11 +167,14 @@ impl FortressSim {
         let interval = self.config.haul_scan_interval;
         let mut candidates = std::mem::take(&mut self.scratch.candidates);
         candidates.clear();
-        for slot in 0..self.icols.len() {
-            if let Some(id) = self.items.id(slot as u32)
+        // Only the item indices due this tick, in ascending order: `(tick + index)`
+        // is a multiple of the interval.
+        let first = (interval - self.tick % interval) % interval;
+        for index in (first..u64::from(self.config.max_items)).step_by(interval as usize) {
+            if let Some(id) = self.items.id_at(index as u32)
+                && let Some(slot) = self.islot(id)
                 && self.icols.haul[slot].is_none()
                 && matches!(self.icols.location[slot], ItemLocation::Ground(_))
-                && sim_core::schedule::staggered(self.tick, interval, u64::from(id.index))
             {
                 candidates.push(id);
             }

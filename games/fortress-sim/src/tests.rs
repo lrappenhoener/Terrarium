@@ -188,7 +188,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x1ab10706311d6098;
+const GOLDEN_ASTAR: u64 = 0xd80b08289b0dff3b;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -474,11 +474,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x1288c0cae2fece10);
+    assert_eq!(sim.state_hash(), 0x67a03d5dfb04d251);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x02311118212efbb2);
+    assert_eq!(sim.state_hash(), 0x082f9d656bf9ef2d);
 }
 
 #[test]
@@ -504,7 +504,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 420, "dug {}", sim.counters.dug);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0xe1968af35f259901;
+const GOLDEN_HIERARCHICAL: u64 = 0xebcf2633d7875684;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -816,9 +816,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0x0650245ed979caab;
-const GOLDEN_MAGMA: u64 = 0x028ad778d7195ba6;
-const GOLDEN_CAVEIN: u64 = 0xf072eb13c8418fb8;
+const GOLDEN_FLOOD: u64 = 0xb41b346373005396;
+const GOLDEN_MAGMA: u64 = 0x609ebddfbdcdd4fd;
+const GOLDEN_CAVEIN: u64 = 0x81da5b63db25a4cc;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -938,9 +938,12 @@ fn hysteresis_markers_survive_save_and_load() {
 #[test]
 #[ignore = "writes a debug dump for manual comparisons"]
 fn write_scenario_dump() {
-    let schedule = scenario();
+    let schedule = scenario_file(
+        &std::env::var("DUMP_SCENARIO").unwrap_or_else(|_| "scenario_dig_in.toml".into()),
+    );
     let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
-    run_with_scenario(&mut sim, &schedule, 2000, |_| {});
+    let ticks = std::env::var("DUMP_TICKS").map_or(2000, |t| t.parse().unwrap());
+    run_with_scenario(&mut sim, &schedule, ticks, |_| {});
     let mut dump = String::new();
     sim.write_debug_dump(&mut dump).unwrap();
     let path = std::env::var("DUMP_PATH").unwrap();
@@ -1907,7 +1910,7 @@ fn times_orders_end_cancel_aborts_and_repeat_uses_every_workshop() {
     assert!(!crafting, "workers of a cancelled order abort");
 }
 
-const GOLDEN_INDUSTRY: u64 = 0x74c919f28b75e9c6;
+const GOLDEN_INDUSTRY: u64 = 0xb72c4d5a769a11a5;
 
 #[test]
 fn industry_is_deterministic_shuffle_neutral_and_golden() {
