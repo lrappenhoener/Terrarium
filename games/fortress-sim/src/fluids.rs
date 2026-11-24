@@ -633,3 +633,29 @@ impl FortressSim {
 
 /// Degrees below the damage threshold at which hot tiles become passable again.
 const HEAT_HYSTERESIS: i32 = 10;
+
+#[cfg(test)]
+impl FortressSim {
+    /// Sets a tile's fluid and books the difference as source or sink.
+    pub(crate) fn place_fluid(&mut self, p: Pos3, value: u8) {
+        let old = self.fluid_at(p);
+        let (before, after) = (u64::from(amount(old)), u64::from(amount(value)));
+        let k = kind(if value != 0 { value } else { old });
+        if after >= before {
+            self.balance.sources[k] += after - before;
+            self.balance.total[k] += after - before;
+        } else {
+            self.balance.sinks[k] += before - after;
+            self.balance.total[k] -= before - after;
+        }
+        self.set_fluid(p, value);
+        if let Some(chunk) = self.fluid.chunk_of(p) {
+            self.fluid_active.wake(chunk);
+        }
+        // Marker update as the fluid phase applies it to changed chunks.
+        if let Some(&tile) = self.world.get(p) {
+            let blocked = self.walk_blocked(p, tile, value);
+            self.world.set(p, tile.with_impassable(blocked));
+        }
+    }
+}

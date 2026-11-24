@@ -172,6 +172,10 @@ impl FortressSim {
                     *cell = target;
                     self.heat_balance.injected += i64::from(delta);
                     self.heat_balance.total += i64::from(delta);
+                    if let Some(&tile) = self.world.get(p) {
+                        let blocked = self.walk_blocked(p, tile, self.fluid_at(p));
+                        self.world.set(p, tile.with_impassable(blocked));
+                    }
                 }
             }
         }
@@ -404,5 +408,25 @@ impl FortressSim {
             buffer[local_index(p)] = energy;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl FortressSim {
+    /// Sets a tile's temperature through its energy deviation, booked as injected.
+    pub(crate) fn place_temperature(&mut self, p: Pos3, temperature: i32) {
+        let target = (temperature - self.ambient(p.z)) * self.capacity(p);
+        let delta = target - self.energy(p);
+        self.load_energy(p, target).unwrap();
+        if delta >= 0 {
+            self.heat_balance.injected += i64::from(delta);
+        } else {
+            self.heat_balance.returned += i64::from(-delta);
+        }
+        self.heat_balance.total += i64::from(delta);
+        if let Some(&tile) = self.world.get(p) {
+            let blocked = self.walk_blocked(p, tile, self.fluid_at(p));
+            self.world.set(p, tile.with_impassable(blocked));
+        }
     }
 }

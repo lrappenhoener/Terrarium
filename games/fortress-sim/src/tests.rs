@@ -862,3 +862,61 @@ fn a_flooded_room_hides_jobs_until_it_is_pumped_out() {
     }
     assert!(dug, "the job became reachable and was done after pumping");
 }
+
+#[test]
+fn hysteresis_markers_survive_save_and_load() {
+    let mut sim = flat(calm());
+    // Two enclosed wells keep their water level.
+    let (rising, falling) = (Pos3::new(5, 5, 1), Pos3::new(10, 5, 1));
+    for well in [rising, falling] {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            sim.world
+                .set(well.offset(dx, dy, 0), Tile::new(TileKind::Solid, false, 3));
+        }
+    }
+    sim.world.clear_changes();
+    sim.connectivity = Connectivity::new(&sim.world);
+    sim.place_fluid(rising, 32);
+    sim.place_fluid(falling, 64);
+    sim.step(&[]);
+    assert!(!sim.world.get(rising).unwrap().impassable());
+    assert!(sim.world.get(falling).unwrap().impassable());
+    sim.place_fluid(rising, 48);
+    sim.place_fluid(falling, 48);
+    sim.step(&[]);
+    let (hot_falling, hot_rising) = (Pos3::new(15, 15, 3), Pos3::new(15, 5, 3));
+    sim.place_temperature(hot_falling, 95);
+    assert!(sim.world.get(hot_falling).unwrap().impassable());
+    sim.place_temperature(hot_falling, 75);
+    sim.place_temperature(hot_rising, 75);
+    sim.check_invariants().unwrap();
+    // Same values, different histories, different markers.
+    assert_eq!(crate::fluids::level(sim.fluid_at(rising)), 3);
+    assert_eq!(crate::fluids::level(sim.fluid_at(falling)), 3);
+    assert!(!sim.world.get(rising).unwrap().impassable());
+    assert!(sim.world.get(falling).unwrap().impassable());
+    assert_eq!(sim.temperature(hot_rising), sim.temperature(hot_falling));
+    assert!(!sim.world.get(hot_rising).unwrap().impassable());
+    assert!(sim.world.get(hot_falling).unwrap().impassable());
+
+    let mut loaded = roundtrip(&sim);
+    for ((p, a), (_, b)) in sim.world.iter_logical().zip(loaded.world.iter_logical()) {
+        assert_eq!(a.impassable(), b.impassable(), "{p:?}");
+        assert_eq!(
+            sim.connectivity.is_standable(p),
+            loaded.connectivity.is_standable(p),
+            "{p:?}"
+        );
+    }
+    let mut dump = String::new();
+    sim.write_debug_dump(&mut dump).unwrap();
+    assert!(
+        dump.contains("tile:10,5,1\tOpen floor=true impassable=true"),
+        "{dump}"
+    );
+    for _ in 0..1000 {
+        sim.step(&[]);
+        loaded.step(&[]);
+        assert_eq!(sim.state_hash(), loaded.state_hash(), "tick {}", sim.tick());
+    }
+}

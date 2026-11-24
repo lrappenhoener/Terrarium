@@ -394,12 +394,13 @@ impl FortressSim {
             if let Some(p) = self.world.pos(index as usize) {
                 writeln!(
                     out,
-                    "tile:{},{},{}\t{:?} floor={} material={}",
+                    "tile:{},{},{}\t{:?} floor={} impassable={} material={}",
                     p.x,
                     p.y,
                     p.z,
                     tile.kind,
                     tile.floor(),
+                    tile.impassable(),
                     tile.material
                 )
                 .map_err(fail)?;
