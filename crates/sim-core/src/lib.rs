@@ -4,6 +4,7 @@
 
 pub mod behavior;
 pub mod entity;
+pub mod index;
 pub mod intent;
 pub mod jobs;
 pub mod path;

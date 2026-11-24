@@ -220,6 +220,7 @@ fn flat(config: FortressConfig) -> FortressSim {
     for location in &mut sim.icols.location {
         *location = ItemLocation::Ground(Pos3::new(0, 0, 1));
     }
+    sim.rebuild_item_index();
     sim.check_invariants().unwrap();
     sim
 }

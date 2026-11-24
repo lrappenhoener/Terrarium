@@ -15,6 +15,7 @@ pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
+    index::CategoryIndex,
     jobs::{Assigner, JobBoard, JobId, JobState, Reservations, job_distance},
     path::{
         AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
@@ -165,6 +166,7 @@ pub struct FortressSim {
     paths: Vec<u32>,
     items: EntityTable<Item>,
     icols: ItemColumns,
+    item_index: CategoryIndex<ItemId>,
     jobs: JobBoard<JobKind, ResidentId>,
     reservations: Reservations<ResKey, ResidentId>,
     queue: PathRequestQueue<ResidentId, Pos3>,
@@ -187,8 +189,6 @@ struct Scratch {
     pending: Vec<(ResidentId, Task)>,
     outcomes: Vec<(ResidentId, ResKey, bool)>,
     stock_counts: Vec<u16>,
-    food: Vec<(Pos3, ItemId)>,
-    stones: Vec<(Pos3, ItemId)>,
     tile_changes: Vec<(Pos3, Tile)>,
     occupied: Vec<Pos3>,
     path: Vec<Pos3>,
@@ -215,8 +215,6 @@ impl Scratch {
             pending: Vec::with_capacity(residents),
             outcomes: Vec::with_capacity(residents * 2),
             stock_counts: Vec::with_capacity(STOCKPILE_CAPACITY),
-            food: Vec::with_capacity(items),
-            stones: Vec::with_capacity(items),
             tile_changes: Vec::with_capacity(residents),
             occupied: Vec::with_capacity(residents + items),
             path: Vec::with_capacity(config.max_path_nodes as usize * 4),
@@ -350,13 +348,17 @@ fn for_box(low: Pos3, high: Pos3, mut visit: impl FnMut(Pos3)) {
 }
 
 impl FortressSim {
-    fn empty(seed: u64, config: FortressConfig, world: ChunkedGrid3<Tile>) -> Self {
+    fn empty(
+        seed: u64,
+        config: FortressConfig,
+        world: ChunkedGrid3<Tile>,
+    ) -> Result<Self, SimError> {
         let residents = config.max_residents;
         let items = config.max_items;
         let connectivity = Connectivity::new(&world);
         let pathfinder = Pathfinder::new(config.pathfinding, &world, config.path_expansion_limit);
         let (w, d) = (config.world_size_xy, config.world_depth);
-        Self {
+        Ok(Self {
             seed,
             tick: 0,
             connectivity,
@@ -366,6 +368,8 @@ impl FortressSim {
             paths: vec![0; residents as usize * config.max_path_nodes as usize],
             items: EntityTable::with_capacity(items),
             icols: ItemColumns::with_capacity(items as usize),
+            item_index: CategoryIndex::new(w, w, d, 3, items)
+                .ok_or_else(|| SimError::InvalidConfig("could not create item index".into()))?,
             jobs: JobBoard::new(config.max_jobs as usize, w, w, d),
             reservations: Reservations::with_capacity(residents as usize * 2 + 16),
             queue: PathRequestQueue::with_capacity(residents as usize),
@@ -382,7 +386,7 @@ impl FortressSim {
             scratch: Scratch::new(&config),
             world,
             config,
-        }
+        })
     }
 
     pub(crate) fn rslot(&self, id: ResidentId) -> Option<usize> {
@@ -458,6 +462,7 @@ impl FortressSim {
         let id = self.items.create()?;
         self.icols
             .push(ItemLocation::Ground(at), kind, material, None);
+        self.index_item(id);
         self.ensure_haul(id);
         Some(id)
     }
@@ -508,6 +513,7 @@ impl FortressSim {
         {
             let at = self.drop_position(self.rcols.position[slot]);
             self.icols.location[islot] = ItemLocation::Ground(at);
+            self.index_item(item);
             if let Task::Haul { job, .. } = task {
                 // The haul job is bound to the item's former position.
                 self.icols.haul[islot] = None;
@@ -521,6 +527,59 @@ impl FortressSim {
         self.rcols.task[slot] = Task::Idle;
         self.rcols.route[slot] = Route::NONE;
         self.rcols.work[slot] = 0;
+    }
+
+    /// Synchronizes the category index with the item's current location.
+    pub(crate) fn index_item(&mut self, id: ItemId) {
+        match self.islot(id) {
+            Some(slot) => match self.icols.location[slot] {
+                ItemLocation::Ground(p) => {
+                    self.item_index
+                        .insert(id.index, id, p, self.icols.kind[slot] as u8);
+                }
+                ItemLocation::Carried(_) => {
+                    self.item_index.remove(id.index);
+                }
+            },
+            None => {
+                self.item_index.remove(id.index);
+            }
+        }
+    }
+
+    pub(crate) fn rebuild_item_index(&mut self) {
+        self.item_index.clear();
+        for id in self.items.iter_by_id().collect::<Vec<_>>() {
+            self.index_item(id);
+        }
+    }
+
+    /// Loose, unreserved items of a kind.
+    fn free_items(&self, kind: ItemKind) -> u32 {
+        let reserved = self
+            .reservations
+            .iter()
+            .filter(|entry| match entry.key {
+                ResKey::Item(item) => self
+                    .item_index
+                    .get(item.index)
+                    .is_some_and(|(key, _, category)| key == item && category == kind as u8),
+                ResKey::Slot(_) => false,
+            })
+            .count() as u32;
+        self.item_index.count(kind as u8).saturating_sub(reserved)
+    }
+
+    /// Nearest loose, unreserved and reachable item by `(distance, id)`, the same
+    /// minimum as an exhaustive scan.
+    fn nearest_free_item(&self, at: Pos3, kind: ItemKind) -> Option<(u32, ItemId)> {
+        self.item_index
+            .nearest(at, kind as u8, u32::MAX, |item, p| {
+                !self.reservations.is_reserved(ResKey::Item(item))
+                    && self.connectivity.reachable(at, p)
+            })
+            .found
+            .map(|(distance, item, _)| (distance, item))
     }
 
     fn item_ground(&self, id: ItemId) -> Option<Pos3> {
@@ -834,17 +893,6 @@ impl FortressSim {
         if !hungry_any {
             return;
         }
-        self.scratch.food.clear();
-        for slot in 0..self.icols.len() {
-            if self.icols.kind[slot] == ItemKind::Food
-                && let ItemLocation::Ground(p) = self.icols.location[slot]
-                && let Some(id) = self.items.id(slot as u32)
-                && !self.reservations.is_reserved(ResKey::Item(id))
-            {
-                self.scratch.food.push((p, id));
-            }
-        }
-        self.scratch.food.sort_unstable_by_key(|&(_, id)| id);
         for id in self.residents.iter_by_id() {
             let Some(slot) = self.rslot(id) else { continue };
             if self.rcols.task[slot] != Task::Idle
@@ -854,14 +902,7 @@ impl FortressSim {
                 continue;
             }
             let at = self.rcols.position[slot];
-            let best = self
-                .scratch
-                .food
-                .iter()
-                .filter(|&&(p, _)| self.connectivity.reachable(at, p))
-                .map(|&(p, item)| (job_distance(at, p), item))
-                .min();
-            if let Some((distance, item)) = best {
+            if let Some((distance, item)) = self.nearest_free_item(at, ItemKind::Food) {
                 self.reservations
                     .claim(ResKey::Item(item), id, FOOD_PRIORITY, distance);
             }
@@ -911,18 +952,7 @@ impl FortressSim {
             .zip(&self.stockpiles)
             .filter(|&(&count, &p)| count == 0 && !self.reservations.is_reserved(ResKey::Slot(p)))
             .count();
-        self.scratch.stones.clear();
-        for slot in 0..self.icols.len() {
-            if self.icols.kind[slot] == ItemKind::Stone
-                && let ItemLocation::Ground(p) = self.icols.location[slot]
-                && let Some(id) = self.items.id(slot as u32)
-                && !self.reservations.is_reserved(ResKey::Item(id))
-            {
-                self.scratch.stones.push((p, id));
-            }
-        }
-        self.scratch.stones.sort_unstable_by_key(|&(_, id)| id);
-        let stones = !self.scratch.stones.is_empty();
+        let stones = self.free_items(ItemKind::Stone) > 0;
         {
             let (world, connectivity, reservations, icols, items) = (
                 &self.world,
@@ -1004,13 +1034,7 @@ impl FortressSim {
                     })
                 }),
                 JobKind::Build(_) => self.best_site(at, job_id).and_then(|site| {
-                    let (distance, stone) = self
-                        .scratch
-                        .stones
-                        .iter()
-                        .filter(|&&(p, _)| self.connectivity.reachable(at, p))
-                        .map(|&(p, item)| (job_distance(at, p), item))
-                        .min()?;
+                    let (distance, stone) = self.nearest_free_item(at, ItemKind::Stone)?;
                     self.reservations
                         .claim(ResKey::Item(stone), worker, priority, distance);
                     Some(Task::Build {
@@ -1397,6 +1421,7 @@ impl FortressSim {
     fn pick_up(&mut self, slot: usize, id: ResidentId, item: ItemId) {
         if let Some(islot) = self.islot(item) {
             self.icols.location[islot] = ItemLocation::Carried(id);
+            self.item_index.remove(item.index);
             self.rcols.carried[slot] = Some(item);
             self.rcols.route[slot] = Route::NONE;
         }
@@ -1405,6 +1430,7 @@ impl FortressSim {
     fn drop_item(&mut self, slot: usize, item: ItemId, at: Pos3) {
         if let Some(islot) = self.islot(item) {
             self.icols.location[islot] = ItemLocation::Ground(at);
+            self.index_item(item);
         }
         self.rcols.carried[slot] = None;
     }
@@ -1492,6 +1518,7 @@ impl FortressSim {
                     self.reservations.release(ResKey::Item(item));
                     if let Some(slot) = self.items.destroy(item) {
                         self.icols.swap_remove(slot);
+                        self.item_index.remove(item.index);
                     }
                 }
                 Op::DespawnResident(id) => {
@@ -1552,7 +1579,7 @@ impl Simulation for FortressSim {
     fn new(seed: u64, config: FortressConfig) -> Result<Self, SimError> {
         config.validate()?;
         let world = world::generate(seed, &config)?;
-        let mut sim = Self::empty(seed, config, world);
+        let mut sim = Self::empty(seed, config, world)?;
         let mut spots = Vec::new();
         sim.standing_tiles_near(
             sim.embark(),

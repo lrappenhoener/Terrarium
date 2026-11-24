@@ -293,6 +293,23 @@ impl FortressSim {
                 return fail("item references a missing haul job");
             }
         }
+        let mut indexed = [0u32; 3];
+        for id in self.items.iter_by_id() {
+            let Some(slot) = self.islot(id) else { continue };
+            let expected = match self.icols.location[slot] {
+                ItemLocation::Ground(p) => Some((id, p, self.icols.kind[slot] as u8)),
+                ItemLocation::Carried(_) => None,
+            };
+            if self.item_index.get(id.index) != expected {
+                return fail("item index differs from item locations");
+            }
+            if let Some((_, _, kind)) = expected {
+                indexed[usize::from(kind)] += 1;
+            }
+        }
+        if (0..3).any(|kind| self.item_index.count(kind as u8) != indexed[kind]) {
+            return fail("item index counts differ");
+        }
         if stock.iter().any(|&count| count > 1) {
             return fail("stockpile tile holds more than one item");
         }

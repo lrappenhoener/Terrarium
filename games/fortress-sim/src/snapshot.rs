@@ -145,7 +145,7 @@ impl FortressSim {
             world.set(p, tile);
         }
         world.clear_changes();
-        let mut sim = Self::empty(state.seed, config, world);
+        let mut sim = Self::empty(state.seed, config, world)?;
         sim.tick = state.tick;
         let cap = sim.config.max_path_nodes as usize;
         if state.stockpiles.windows(2).any(|pair| pair[0] >= pair[1])
@@ -191,6 +191,7 @@ impl FortressSim {
         for record in state.items {
             sim.icols.push_row(record.row);
         }
+        sim.rebuild_item_index();
         let (w, d) = (sim.config.world_size_xy, sim.config.world_depth);
         sim.jobs = JobBoard::restore(
             sim.config.max_jobs as usize,
