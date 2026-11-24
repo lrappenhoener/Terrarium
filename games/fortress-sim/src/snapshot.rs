@@ -53,6 +53,16 @@ struct State {
     counters: Counters,
 }
 
+/// Payload version 2 starts with this tag and the generator fingerprint. Version 1
+/// payloads start directly with the state and are accepted with a warning.
+const TAG_V2: [u8; 8] = *b"FORTSNP2";
+
+#[derive(Serialize, Deserialize)]
+struct Generator {
+    version: u32,
+    hash: u64,
+}
+
 fn fail(error: impl ToString) -> SimError {
     SimError::Snapshot(error.to_string())
 }
@@ -123,17 +133,45 @@ impl FortressSim {
                 .collect(),
             counters: self.counters,
         };
-        *out = postcard::to_allocvec(&state).map_err(fail)?;
+        let (version, hash) = world::generator_fingerprint(&self.config);
+        *out =
+            postcard::to_allocvec(&(TAG_V2, Generator { version, hash }, state)).map_err(fail)?;
         Ok(())
     }
 
     pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Self, SimError> {
-        let (state, rest) = postcard::take_from_bytes::<State>(bytes).map_err(fail)?;
+        let (generator, state, rest) = if bytes.starts_with(&TAG_V2) {
+            let ((_, generator, state), rest) =
+                postcard::take_from_bytes::<([u8; 8], Generator, State)>(bytes).map_err(fail)?;
+            (Some(generator), state, rest)
+        } else {
+            let (state, rest) = postcard::take_from_bytes::<State>(bytes).map_err(fail)?;
+            (None, state, rest)
+        };
         if !rest.is_empty() {
             return Err(fail("trailing snapshot data"));
         }
         let config: FortressConfig = serde_json::from_str(&state.config).map_err(fail)?;
         config.validate()?;
+        let (version, hash) = world::generator_fingerprint(&config);
+        let warning = match generator {
+            Some(stored) if stored.version != version => {
+                return Err(fail(format!(
+                    "Weltgenerator geändert: Version {} → {version}",
+                    stored.version
+                )));
+            }
+            Some(stored) if stored.hash != hash => {
+                return Err(fail(format!(
+                    "Weltgenerator geändert: Fingerabdruck {:#018x} → {hash:#018x}",
+                    stored.hash
+                )));
+            }
+            Some(_) => None,
+            None => Some(format!(
+                "Fortress-Snapshot ohne Generator-Fingerabdruck (Nutzlast v1); angenommen wird Generator-Version {version}"
+            )),
+        };
         let mut world = world::generate(state.seed, &config)?;
         if state.tiles.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(fail("tile changes must ascend by index"));
@@ -213,6 +251,7 @@ impl FortressSim {
         sim.events = EventQueue::restore(16, state.event_sequence, state.events)
             .ok_or_else(|| fail("invalid scheduler state"))?;
         sim.counters = state.counters;
+        sim.load_warnings.extend(warning);
         sim.validate_state()?;
         Ok(sim)
     }

@@ -57,6 +57,16 @@ pub trait Simulation: Sized {
         0
     }
 
+    /// Oldest payload version `load_snapshot` still accepts. Defaults to the current one.
+    fn min_snapshot_version() -> u32 {
+        Self::snapshot_version()
+    }
+
+    /// Non-fatal notes from loading, such as an accepted legacy payload.
+    fn load_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Writes the complete logical state, excluding rebuildable derived values.
     fn save_snapshot(&self, _out: &mut Vec<u8>) -> Result<(), SimError> {
         Err(SimError::Unsupported("snapshots"))

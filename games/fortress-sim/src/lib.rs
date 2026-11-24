@@ -177,6 +177,7 @@ pub struct FortressSim {
     counters: Counters,
     diag: Diagnostics,
     scratch: Scratch,
+    load_warnings: Vec<String>,
 }
 
 /// Reused buffers. Their contents never survive a phase.
@@ -384,6 +385,7 @@ impl FortressSim {
                 ..Diagnostics::default()
             },
             scratch: Scratch::new(&config),
+            load_warnings: Vec::new(),
             world,
             config,
         })
@@ -1656,7 +1658,15 @@ impl Simulation for FortressSim {
     }
 
     fn snapshot_version() -> u32 {
+        2
+    }
+
+    fn min_snapshot_version() -> u32 {
         1
+    }
+
+    fn load_warnings(&self) -> Vec<String> {
+        self.load_warnings.clone()
     }
 
     fn save_snapshot(&self, out: &mut Vec<u8>) -> Result<(), SimError> {

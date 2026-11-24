@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Added `min_snapshot_version` and `load_warnings` with defaults, so games can keep loading older payload versions and report it. Runners accept container versions between the minimum and the current version and print the warnings.
 - Documented the `key<TAB>value` line format of `debug_dump` with unique stable keys, so runners can compare dumps by key and report one inserted entity instead of every following line. Dumps without tabs remain valid and compare as whole lines.
 - Added opt-in snapshot version, save/load, content fingerprint and logical dump hooks with defaults for existing games. `SimError` is now non-exhaustive so future diagnostic variants can be added. External exhaustive matches need a fallback. The crate exposes its version for archive headers.
 

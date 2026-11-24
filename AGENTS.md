@@ -86,5 +86,6 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 
 - Snapshots speichern den vollständigen logischen Zustand. Indizes, Caches, Puffer und Slot-Reihenfolge werden beim Laden neu aufgebaut. Formatänderungen erhöhen die Snapshot-Version und benötigen eine Migration oder einen dokumentierten Bruch. Der Golden Snapshot muss weiterhin laden.
 - Neuer Zustand gehört gleichzeitig in Snapshot, Hash, `debug_dump` und Invarianten. Spiele mit Snapshot-Unterstützung prüfen Save/Load im Runner.
+- Jede Änderung am Fortress-Weltgenerator erhöht `GENERATOR_VERSION` in `games/fortress-sim/src/world.rs`. Snapshots speichern den Generator-Fingerabdruck, abweichende Stände werden vor der Rekonstruktion abgelehnt. Ab Etappe 8 sind dafür Migrationen nötig.
 - Replays sind das Standardformat für Bug-Reports. Simulationsfehler möglichst zuerst als Replay oder Snapshot reproduzieren und anschließend als Regressionstest erhalten.
 - Replays werden während des Laufs als längenpräfixierte Datensätze mit Prüfsumme geschrieben und überstehen Abstürze bis zum letzten vollständigen Datensatz. Panics in `step` schließt der Runner mit einem Panic-Datensatz ab und endet mit Exit-Code 7.

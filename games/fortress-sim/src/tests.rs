@@ -529,3 +529,30 @@ fn large_embarks_spawn_only_on_tiles_reachable_from_the_embark() {
             .all(|p| sim.connectivity.reachable(embark, *p))
     );
 }
+
+#[test]
+fn changed_generator_version_is_reported_before_reconstruction() {
+    let sim = small_run(20);
+    let mut bytes = Vec::new();
+    sim.save_snapshot(&mut bytes).unwrap();
+    assert!(
+        FortressSim::load_snapshot(&bytes)
+            .unwrap()
+            .load_warnings()
+            .is_empty()
+    );
+    assert_eq!(&bytes[..8], b"FORTSNP2");
+    assert_eq!(bytes[8], 1, "generator version varint");
+    bytes[8] = 7;
+    let error = FortressSim::load_snapshot(&bytes)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.ends_with("Weltgenerator geändert: Version 7 → 1"),
+        "{error}"
+    );
+    let legacy = include_bytes!("../tests/fixtures/fortress-v1-small.bin");
+    let loaded = FortressSim::load_snapshot(legacy).unwrap();
+    assert_eq!(loaded.load_warnings().len(), 1);
+}

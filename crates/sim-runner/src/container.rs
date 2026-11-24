@@ -171,7 +171,7 @@ pub(crate) fn restore<S: Simulation>(game: &str, snapshot: &Container) -> Result
             header.game
         )));
     }
-    if header.snapshot_version != S::snapshot_version() {
+    if !(S::min_snapshot_version()..=S::snapshot_version()).contains(&header.snapshot_version) {
         return Err(invalid(format!(
             "snapshot version {} is incompatible with {}",
             header.snapshot_version,
@@ -179,6 +179,12 @@ pub(crate) fn restore<S: Simulation>(game: &str, snapshot: &Container) -> Result
         )));
     }
     let sim = S::load_snapshot(&snapshot.payload)?;
+    for warning in sim.load_warnings() {
+        let _ = std::io::Write::write_all(
+            &mut std::io::stderr().lock(),
+            format!("Warnung: {warning}\n").as_bytes(),
+        );
+    }
     if sim.tick() != header.tick {
         return Err(invalid(format!(
             "loaded tick {}, expected {}",

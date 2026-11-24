@@ -125,3 +125,36 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
     world.clear_changes();
     Ok(world)
 }
+
+/// Manually maintained generator version. Every change to the generated world
+/// increments it, so stored worlds cannot be combined with a different generator.
+pub(crate) const GENERATOR_VERSION: u32 = 1;
+
+/// Hash over the generator version, its internal constants and all generator inputs.
+pub(crate) fn generator_fingerprint(config: &FortressConfig) -> (u32, u64) {
+    let mut hash = sim_host::StateHasher::new();
+    hash.write_bytes(b"fortress-generator");
+    hash.write_u32(GENERATOR_VERSION);
+    hash.write_u64(NOISE_CELL as u64);
+    hash.write_u32(u32::from(SOIL));
+    for value in [
+        config.world_size_xy,
+        config.world_depth,
+        config.ground_level,
+        config.mountain_center_x,
+        config.mountain_center_y,
+        config.mountain_radius,
+        config.mountain_height,
+    ] {
+        hash.write_u32(value as u32);
+    }
+    hash.write_u32(config.ore_veins);
+    hash.write_u32(config.ore_vein_length);
+    hash.write_usize(config.materials.len());
+    for material in &config.materials {
+        hash.write_bytes(material.name.as_bytes());
+        hash.write_u8(0);
+        hash.write_bool(material.ore);
+    }
+    (GENERATOR_VERSION, hash.finish())
+}
