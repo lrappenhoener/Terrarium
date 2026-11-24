@@ -39,6 +39,28 @@ impl FortressSim {
             ("eaten", self.counters.eaten as f64),
             ("caravans", self.counters.caravans as f64),
             ("deaths_hunger", self.counters.deaths[0] as f64),
+            ("deaths_drowned", self.counters.deaths[1] as f64),
+            ("deaths_heat", self.counters.deaths[2] as f64),
+            ("deaths_collapse", self.counters.deaths[3] as f64),
+            ("water_total", self.balance.total[0] as f64),
+            ("magma_total", self.balance.total[1] as f64),
+            ("water_sources", self.balance.sources[0] as f64),
+            ("water_sinks", self.balance.sinks[0] as f64),
+            ("water_evaporated", self.balance.evaporated as f64),
+            ("water_converted", self.balance.converted[0] as f64),
+            ("magma_converted", self.balance.converted[1] as f64),
+            ("water_boiled", self.balance.boiled as f64),
+            ("fluid_chunks_awake", self.fluid_active.awake_count() as f64),
+            (
+                "fluid_chunks_asleep",
+                (self.fluid_active.chunk_count() - self.fluid_active.awake_count()) as f64,
+            ),
+            (
+                "fluid_tiles_per_tick",
+                self.diag.fluid_tiles as f64 / self.tick.max(1) as f64,
+            ),
+            ("aquifer_faces", self.aquifer_sources.len() as f64),
+            ("items_destroyed", self.diag.items_destroyed as f64),
             (
                 "invalid_designations",
                 self.counters.invalid_designations as f64,
@@ -105,7 +127,13 @@ impl FortressSim {
         }
     }
 
-    pub(crate) fn hashes(&self) -> [(&'static str, u64); 5] {
+    pub(crate) fn hashes(&self) -> [(&'static str, u64); 6] {
+        let mut fluids = StateHasher::new();
+        for (_, value) in self.fluid.iter_logical() {
+            fluids.write_u8(*value);
+        }
+        self.balance.state_hash(&mut fluids);
+
         let mut world = StateHasher::new();
         world.write_u32(self.world.width() as u32);
         world.write_u32(self.world.height() as u32);
@@ -173,6 +201,7 @@ impl FortressSim {
             ("items", items.finish()),
             ("jobs", jobs.finish()),
             ("meta", meta.finish()),
+            ("fluids", fluids.finish()),
         ]
     }
 
@@ -231,7 +260,13 @@ impl FortressSim {
                 return fail("live resident without slot");
             };
             let p = self.rcols.position[slot];
-            if !self.world.get(p).is_some_and(|t| standable(*t)) {
+            // Rising fluid may leave a resident on an impassable tile until it swims away.
+            let submerged = crate::fluids::level(self.fluid_at(p)) > 0;
+            if !self
+                .world
+                .get(p)
+                .is_some_and(|t| standable(*t) || (submerged && t.kind != TileKind::Solid))
+            {
                 return fail("resident does not stand on a standable tile");
             }
             if let Some(item) = self.rcols.carried[slot] {
@@ -321,6 +356,22 @@ impl FortressSim {
         }
         if self.stockpiles.windows(2).any(|pair| pair[0] >= pair[1]) {
             return fail("stockpile tiles are not sorted and unique");
+        }
+        let counted = self.count_fluids();
+        for (kind, &count) in counted.iter().enumerate() {
+            if count != self.balance.total[kind]
+                || i128::from(self.balance.total[kind]) != self.balance.expected(kind)
+            {
+                return fail("fluid conservation violated");
+            }
+        }
+        for (p, value) in self.fluid.iter_logical() {
+            if *value != 0
+                && (*value & 0x7f == 0
+                    || self.world.get(p).is_none_or(|t| t.kind == TileKind::Solid))
+            {
+                return fail("fluid inside a solid tile or with an empty level");
+            }
         }
         self.reservations
             .check(

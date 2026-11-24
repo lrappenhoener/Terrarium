@@ -1,0 +1,23 @@
+# Seed 42, default world. As scenario_flood.toml, but the shaft continues to z=1
+# above the magma sea at z=0. Water from the flooded gallery falls onto the magma
+# and turns it into obsidian; the exposed magma heats the bottom of the shaft.
+#
+
+[[schedule]]
+tick = 0
+commands = [
+    { DesignateStockpile = { from = { x = 1, y = 24, z = 14 }, to = { x = 12, y = 43, z = 14 } } },
+    { DesignateDig = { from = { x = 14, y = 47, z = 14 }, to = { x = 39, y = 49, z = 14 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 14 }, to = { x = 40, y = 48, z = 14 }, mode = "StairDown" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 3 }, to = { x = 40, y = 48, z = 13 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 2 }, to = { x = 40, y = 48, z = 2 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 1 }, to = { x = 40, y = 48, z = 1 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 41, y = 45, z = 2 }, to = { x = 52, y = 51, z = 2 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 41, y = 45, z = 5 }, to = { x = 48, y = 51, z = 5 }, mode = "Dig" } },
+]
+
+[[schedule]]
+tick = 1500
+commands = [
+    { DesignateDig = { from = { x = 41, y = 48, z = 10 }, to = { x = 60, y = 48, z = 10 }, mode = "Dig" } },
+]

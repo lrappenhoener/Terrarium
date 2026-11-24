@@ -51,11 +51,14 @@ struct State {
     event_sequence: u64,
     events: Vec<(u64, u64, Event)>,
     counters: Counters,
+    fluids: Vec<(u32, u8)>,
+    balance: crate::fluids::FluidBalance,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
 /// payloads start directly with the state and are accepted with a warning.
 const TAG_V2: [u8; 8] = *b"FORTSNP2";
+const TAG_V3: [u8; 8] = *b"FORTSNP3";
 
 #[derive(Serialize, Deserialize)]
 struct Generator {
@@ -78,6 +81,20 @@ impl FortressSim {
             .enumerate()
             .filter(|(_, ((_, now), (_, then)))| now != then)
             .map(|(index, ((_, tile), _))| (index as u32, *tile))
+            .collect())
+    }
+
+    /// Logical indices and fluid bytes that differ from the generated fluids.
+    fn fluid_changes(&self) -> Result<Vec<(u32, u8)>, SimError> {
+        let generated =
+            world::generate_fluids(&self.config).ok_or_else(|| fail("could not reserve fluids"))?;
+        Ok(self
+            .fluid
+            .iter_logical()
+            .zip(generated.iter_logical())
+            .enumerate()
+            .filter(|(_, ((_, now), (_, then)))| now != then)
+            .map(|(index, ((_, value), _))| (index as u32, *value))
             .collect())
     }
 
@@ -132,22 +149,40 @@ impl FortressSim {
                 .map(|(tick, seq, event)| (tick, seq, *event))
                 .collect(),
             counters: self.counters,
+            fluids: self.fluid_changes()?,
+            balance: self.balance,
         };
         let (version, hash) = world::generator_fingerprint(&self.config);
         *out =
-            postcard::to_allocvec(&(TAG_V2, Generator { version, hash }, state)).map_err(fail)?;
+            postcard::to_allocvec(&(TAG_V3, Generator { version, hash }, state)).map_err(fail)?;
         Ok(())
     }
 
     pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Self, SimError> {
-        let (generator, state, rest) = if bytes.starts_with(&TAG_V2) {
-            let ((_, generator, state), rest) =
-                postcard::take_from_bytes::<([u8; 8], Generator, State)>(bytes).map_err(fail)?;
-            (Some(generator), state, rest)
-        } else {
-            let (state, rest) = postcard::take_from_bytes::<State>(bytes).map_err(fail)?;
-            (None, state, rest)
-        };
+        // The generator version is checked before anything else is decoded. Payload
+        // versions 1 and 2 belong to generator version 1 and cannot be rebuilt.
+        if !bytes.starts_with(&TAG_V3) && !bytes.starts_with(&TAG_V2) {
+            return Err(fail(format!(
+                "Weltgenerator geändert: Version 1 → {}",
+                world::GENERATOR_VERSION
+            )));
+        }
+        let ((tag, generator), rest) =
+            postcard::take_from_bytes::<([u8; 8], Generator)>(bytes).map_err(fail)?;
+        if generator.version != world::GENERATOR_VERSION {
+            return Err(fail(format!(
+                "Weltgenerator geändert: Version {} → {}",
+                generator.version,
+                world::GENERATOR_VERSION
+            )));
+        }
+        if tag != TAG_V3 {
+            return Err(fail(
+                "Fortress-Snapshot-Nutzlast v2 wird nicht mehr unterstützt",
+            ));
+        }
+        let generator = Some(generator);
+        let (state, rest) = postcard::take_from_bytes::<State>(rest).map_err(fail)?;
         if !rest.is_empty() {
             return Err(fail("trailing snapshot data"));
         }
@@ -168,9 +203,7 @@ impl FortressSim {
                 )));
             }
             Some(_) => None,
-            None => Some(format!(
-                "Fortress-Snapshot ohne Generator-Fingerabdruck (Nutzlast v1); angenommen wird Generator-Version {version}"
-            )),
+            None => None::<String>,
         };
         let mut world = world::generate(state.seed, &config)?;
         if state.tiles.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
@@ -252,6 +285,19 @@ impl FortressSim {
             .ok_or_else(|| fail("invalid scheduler state"))?;
         sim.counters = state.counters;
         sim.load_warnings.extend(warning);
+        if state.fluids.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(fail("fluid changes must ascend by index"));
+        }
+        for (index, value) in state.fluids {
+            let p = sim
+                .fluid
+                .pos(index as usize)
+                .ok_or_else(|| fail("fluid change outside the world"))?;
+            sim.fluid.set(p, value);
+        }
+        sim.fluid.clear_changes();
+        sim.balance = state.balance;
+        sim.init_physics();
         sim.validate_state()?;
         Ok(sim)
     }

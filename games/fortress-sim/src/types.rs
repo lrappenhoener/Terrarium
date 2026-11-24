@@ -112,6 +112,15 @@ impl StateHash for ResKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vitals {
+    pub health: u16,
+    /// Consecutive ticks in deep water.
+    pub submerged: u16,
+}
+
+sim_core::state_hash_struct!(Vitals { health, submerged });
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
     pub hunger: u16,
     pub fatigue: u16,
@@ -144,6 +153,10 @@ pub enum Task {
         site: Pos3,
         stage: u8,
     },
+    /// Escape from water or heat to a safe tile.
+    Flee {
+        target: Pos3,
+    },
 }
 
 impl Task {
@@ -173,6 +186,7 @@ impl Task {
             Self::Dig { .. } => "dig",
             Self::Haul { .. } => "haul",
             Self::Build { .. } => "build",
+            Self::Flee { .. } => "flee",
         }
     }
 }
@@ -208,6 +222,10 @@ impl StateHash for Task {
             } => {
                 hash.write_u8(5);
                 (job, item, site, stage).state_hash(hash);
+            }
+            Self::Flee { target } => {
+                hash.write_u8(6);
+                target.state_hash(hash);
             }
         }
     }
@@ -261,6 +279,9 @@ pub enum Event {
 #[repr(u8)]
 pub enum Death {
     Hunger,
+    Drowned,
+    Heat,
+    Collapse,
 }
 
 /// Deferred entity operations, applied at the end of the tick in source order.

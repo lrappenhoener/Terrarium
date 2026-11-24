@@ -60,7 +60,9 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
     let mut world = ChunkedGrid3::new(size, size, depth, Tile::new(TileKind::Open, false, SOIL))
         .ok_or_else(|| SimError::InvalidConfig("could not reserve world".into()))?;
     let rocks: Vec<u16> = (1..config.materials.len() as u16)
-        .filter(|&m| !config.materials[usize::from(m)].ore)
+        .filter(|&m| {
+            !config.materials[usize::from(m)].ore && config.materials[usize::from(m)].layer
+        })
         .collect();
     let ores: Vec<u16> = (1..config.materials.len() as u16)
         .filter(|&m| config.materials[usize::from(m)].ore)
@@ -122,13 +124,95 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
             }
         }
     }
+    carve_physics(config, &mut world);
     world.clear_changes();
     Ok(world)
 }
 
+/// Standing level of the river bed and the x range of the river at the east edge.
+pub(crate) fn river(config: &FortressConfig) -> Option<(std::ops::Range<i32>, i32)> {
+    let p = &config.physics;
+    (p.river && p.river_width > 0).then(|| {
+        let end = config.world_size_xy - 2;
+        ((end - p.river_width).max(0)..end, config.ground_level - 1)
+    })
+}
+
+fn carve_physics(config: &FortressConfig, world: &mut ChunkedGrid3<Tile>) {
+    let p = &config.physics;
+    if let Some(aquifer) = config.aquifer_material() {
+        let r2 = i64::from(p.aquifer_radius).pow(2);
+        for z in p.aquifer_z_low..=p.aquifer_z_high {
+            for y in 0..config.world_size_xy {
+                for x in 0..config.world_size_xy {
+                    let dx = i64::from(x - p.aquifer_center_x);
+                    let dy = i64::from(y - p.aquifer_center_y);
+                    let at = Pos3::new(x, y, z);
+                    if dx * dx + dy * dy <= r2
+                        && world
+                            .get(at)
+                            .is_some_and(|t| t.kind == TileKind::Solid && t.material != SOIL)
+                    {
+                        world.set(at, Tile::new(TileKind::Solid, false, aquifer));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((xs, bed)) = river(config) {
+        for y in 0..config.world_size_xy {
+            for x in xs.clone() {
+                world.set(Pos3::new(x, y, bed), Tile::new(TileKind::Open, true, SOIL));
+                world.set(
+                    Pos3::new(x, y, bed + 1),
+                    Tile::new(TileKind::Open, false, SOIL),
+                );
+            }
+        }
+    }
+    if p.magma_sea {
+        for y in 0..config.world_size_xy {
+            for x in 0..config.world_size_xy {
+                world.set(
+                    Pos3::new(x, y, 0),
+                    Tile::new(TileKind::Open, true, SOIL).with_impassable(true),
+                );
+            }
+        }
+    }
+}
+
+/// Fluid byte: units in bits 0 to 6 (16 per level), magma in bit 7.
+pub(crate) const MAGMA: u8 = 0x80;
+
+/// Initial fluids: the river bed holds water, the bottom level is a magma sea.
+pub(crate) fn generate_fluids(config: &FortressConfig) -> Option<ChunkedGrid3<u8>> {
+    let size = config.world_size_xy;
+    let mut fluid = ChunkedGrid3::new(size, size, config.world_depth, 0u8)?;
+    if let Some((xs, bed)) = river(config) {
+        for y in 0..size {
+            for x in xs.clone() {
+                fluid.set(
+                    Pos3::new(x, y, bed),
+                    config.physics.river_initial_level * 16,
+                );
+            }
+        }
+    }
+    if config.physics.magma_sea {
+        for y in 0..size {
+            for x in 0..size {
+                fluid.set(Pos3::new(x, y, 0), MAGMA | (7 * 16));
+            }
+        }
+    }
+    fluid.clear_changes();
+    Some(fluid)
+}
+
 /// Manually maintained generator version. Every change to the generated world
 /// increments it, so stored worlds cannot be combined with a different generator.
-pub(crate) const GENERATOR_VERSION: u32 = 1;
+pub(crate) const GENERATOR_VERSION: u32 = 2;
 
 /// Hash over the generator version, its internal constants and all generator inputs.
 pub(crate) fn generator_fingerprint(config: &FortressConfig) -> (u32, u64) {
@@ -150,11 +234,27 @@ pub(crate) fn generator_fingerprint(config: &FortressConfig) -> (u32, u64) {
     }
     hash.write_u32(config.ore_veins);
     hash.write_u32(config.ore_vein_length);
+    let p = &config.physics;
+    hash.write_bool(p.river);
+    hash.write_bool(p.magma_sea);
+    for value in [
+        p.river_width,
+        p.aquifer_center_x,
+        p.aquifer_center_y,
+        p.aquifer_radius,
+        p.aquifer_z_low,
+        p.aquifer_z_high,
+    ] {
+        hash.write_u32(value as u32);
+    }
+    hash.write_u8(p.river_initial_level);
     hash.write_usize(config.materials.len());
     for material in &config.materials {
         hash.write_bytes(material.name.as_bytes());
         hash.write_u8(0);
         hash.write_bool(material.ore);
+        hash.write_bool(material.aquifer);
+        hash.write_bool(material.layer);
     }
     (GENERATOR_VERSION, hash.finish())
 }

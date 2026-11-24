@@ -181,7 +181,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x0647c8823c28e430;
+const GOLDEN_ASTAR: u64 = 0xdcaeb4e9807edfef;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -193,7 +193,7 @@ fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
     let bottom = sim.world.get(Pos3::new(40, 48, 2)).unwrap();
     assert_eq!(bottom.kind, TileKind::StairUp);
     assert_eq!(sim.counters.invalid_designations, 3);
-    assert_eq!(sim.counters.deaths, [0]);
+    assert_eq!(sim.counters.deaths[0], 0, "no resident starves");
 }
 
 /// A flat one-level world: rock at z=0, floor at z=1, air above.
@@ -214,6 +214,12 @@ fn flat(config: FortressConfig) -> FortressSim {
     }
     sim.world.clear_changes();
     sim.connectivity = Connectivity::new(&sim.world);
+    for (p, _) in sim.world.iter_logical().collect::<Vec<_>>() {
+        sim.fluid.set(p, 0);
+    }
+    sim.fluid.clear_changes();
+    sim.balance = fluids::FluidBalance::default();
+    sim.init_physics();
     for p in &mut sim.rcols.position {
         *p = Pos3::new(1, 1, 1);
     }
@@ -242,6 +248,11 @@ fn calm() -> FortressConfig {
         starve_at: 65_000,
         tired_at: 60_000,
         caravan_interval: 1_000_000,
+        physics: PhysicsConfig {
+            river: false,
+            magma_sea: false,
+            ..PhysicsConfig::default()
+        },
         ..FortressConfig::default()
     }
 }
@@ -431,7 +442,7 @@ fn small_run(ticks: u64) -> FortressSim {
     sim
 }
 
-const GOLDEN_SNAPSHOT: &str = "tests/fixtures/fortress-v1-small.bin";
+const GOLDEN_SNAPSHOT: &str = "tests/fixtures/fortress-v3-small.bin";
 
 #[test]
 #[ignore = "writes the golden snapshot fixture"]
@@ -452,14 +463,14 @@ fn write_golden_snapshot() {
 
 #[test]
 fn golden_small_snapshot_loads_and_continues() {
-    let bytes = include_bytes!("../tests/fixtures/fortress-v1-small.bin");
+    let bytes = include_bytes!("../tests/fixtures/fortress-v3-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x4b5fe3168d2245db);
+    assert_eq!(sim.state_hash(), 0x6fd9485ac54d3e31);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x87e72f66415229d4);
+    assert_eq!(sim.state_hash(), 0xe9ee201e17a5e3e4);
 }
 
 #[test]
@@ -484,7 +495,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x000538f6ea0f8d1e;
+const GOLDEN_HIERARCHICAL: u64 = 0x32ba3a9a5c3311ae;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -541,20 +552,27 @@ fn changed_generator_version_is_reported_before_reconstruction() {
             .load_warnings()
             .is_empty()
     );
-    assert_eq!(&bytes[..8], b"FORTSNP2");
-    assert_eq!(bytes[8], 1, "generator version varint");
+    assert_eq!(&bytes[..8], b"FORTSNP3");
+    assert_eq!(bytes[8], 2, "generator version varint");
     bytes[8] = 7;
     let error = FortressSim::load_snapshot(&bytes)
         .err()
         .unwrap()
         .to_string();
     assert!(
-        error.ends_with("Weltgenerator geändert: Version 7 → 1"),
+        error.ends_with("Weltgenerator geändert: Version 7 → 2"),
         "{error}"
     );
+    // Payloads of generator version 1 are a documented break.
     let legacy = include_bytes!("../tests/fixtures/fortress-v1-small.bin");
-    let loaded = FortressSim::load_snapshot(legacy).unwrap();
-    assert_eq!(loaded.load_warnings().len(), 1);
+    let error = FortressSim::load_snapshot(legacy)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.ends_with("Weltgenerator geändert: Version 1 → 2"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -593,4 +611,63 @@ fn querying_the_full_view_every_tick_leaves_hashes_unchanged() {
     });
     assert_eq!(tiles, 600 * observed.world.len());
     assert!(!items.is_empty() && !jobs.is_empty());
+}
+
+fn scenario_file(name: &str) -> Vec<(u64, Vec<FortressCommand>)> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        tick: u64,
+        commands: Vec<FortressCommand>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        schedule: Vec<Entry>,
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(name);
+    let file: File = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    file.schedule
+        .into_iter()
+        .map(|entry| (entry.tick, entry.commands))
+        .collect()
+}
+
+#[test]
+fn sleeping_chunks_do_not_change_behavior() {
+    let schedule = scenario_file("scenario_magma.toml");
+    let mut asleep = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut config = FortressConfig::default();
+    config.physics.sleeping = false;
+    let mut awake = FortressSim::new(42, config).unwrap();
+    let mut hashes = Vec::new();
+    let mut slept = 0;
+    run_with_scenario(&mut asleep, &schedule, 3500, |sim| {
+        hashes.push(sim.state_hash());
+        slept = slept.max(sim.fluid_active.chunk_count() - sim.fluid_active.awake_count());
+    });
+    let mut index = 0;
+    run_with_scenario(&mut awake, &schedule, 3500, |sim| {
+        assert_eq!(sim.state_hash(), hashes[index], "tick {}", sim.tick());
+        index += 1;
+    });
+    assert!(slept > 100, "chunks fell asleep in the sleeping run");
+    assert!(awake.fluid_active.awake_count() > asleep.fluid_active.awake_count());
+    assert!(
+        asleep.balance.converted[1] > 0,
+        "the run exercised obsidian"
+    );
+}
+
+#[test]
+fn fluids_are_conserved_for_ten_thousand_flood_ticks() {
+    let schedule = scenario_file("scenario_flood.toml");
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    run_with_scenario(&mut sim, &schedule, 10_000, |sim| {
+        sim.check_invariants().unwrap()
+    });
+    let b = sim.balance;
+    assert!(b.sources[0] > 10_000 && b.evaporated > 0);
+    assert_eq!(sim.count_fluids(), b.total);
+    assert_eq!(i128::from(b.total[0]), b.expected(0));
 }

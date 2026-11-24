@@ -299,6 +299,11 @@ impl<T> ChunkedGrid3<T> {
         }
     }
 
+    /// Chunks changed since the last `take_changed_chunks`, in change order.
+    pub fn pending_changes(&self) -> &[ChunkId] {
+        &self.changed_list
+    }
+
     pub fn has_changes(&self) -> bool {
         !self.changed_list.is_empty()
     }

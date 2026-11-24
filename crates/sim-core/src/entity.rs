@@ -589,6 +589,7 @@ macro_rules! entity_columns {
                 Self { $($field: Vec::with_capacity(capacity),)+ }
             }
 
+            #[allow(clippy::too_many_arguments)]
             $vis fn push(&mut self, $($field: $type),+) {
                 $(self.$field.push($field);)+
             }

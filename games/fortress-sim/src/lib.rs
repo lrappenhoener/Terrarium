@@ -5,13 +5,14 @@
 
 mod config;
 mod diagnostics;
+mod fluids;
 mod render;
 mod snapshot;
 mod types;
 pub mod view;
 mod world;
 
-pub use config::{FortressConfig, MaterialConfig, Pathfinding};
+pub use config::{FortressConfig, MaterialConfig, Pathfinding, PhysicsConfig};
 pub use sim_core::space::{Pos3, Tile, TileKind};
 pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 
@@ -23,6 +24,7 @@ use sim_core::{
         AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
         SearchOutcome,
     },
+    physics::ActiveChunkSet,
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
     space::{ChunkId, ChunkedGrid3, standable, walk_neighbors},
@@ -32,7 +34,7 @@ use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
 use types::{
     Death, Event, Item, ItemId, ItemLocation, JobKind, Needs, Op, ResKey, Resident, ResidentId,
-    Route, RouteStatus, Task,
+    Route, RouteStatus, Task, Vitals,
 };
 
 const DIG_PRIORITY: i32 = 5;
@@ -41,17 +43,19 @@ const HAUL_PRIORITY: i32 = 2;
 const FOOD_PRIORITY: i32 = 10;
 const CLEAR_PRIORITY: i32 = 6;
 const MAX_ROUTE_FAILURES: u8 = 3;
+pub(crate) const HEALTH: u16 = 100;
 /// Diagnostic threshold for long paths, in nodes.
 const LONG_PATH: usize = 100;
 pub(crate) const STOCKPILE_CAPACITY: usize = 1 << 16;
 const SOURCE_COMMAND: u8 = 0;
 const SOURCE_RESIDENT: u8 = 1;
-const SOURCE_EVENT: u8 = 2;
+pub(crate) const SOURCE_EVENT: u8 = 2;
 
 sim_core::entity_columns! {
     struct ResidentColumns, row ResidentRow {
         position: Pos3,
         needs: Needs,
+        vitals: Vitals,
         task: Task,
         carried: Option<ItemId>,
         route: Route,
@@ -76,7 +80,7 @@ pub(crate) struct Counters {
     pub hauled: u64,
     pub eaten: u64,
     pub caravans: u64,
-    pub deaths: [u64; 1],
+    pub deaths: [u64; 4],
     pub invalid_designations: u64,
     pub aborted_tasks: u64,
     pub completed_jobs: u64,
@@ -106,6 +110,9 @@ pub(crate) struct Diagnostics {
     pub changed_chunks: u64,
     pub last_changed_chunks: u64,
     pub lowest_level: i32,
+    pub fluid_tiles: u64,
+    pub fluid_last_tiles: u64,
+    pub items_destroyed: u64,
     pub path_cost: u64,
     pub long_paths: u64,
     pub long_path_nodes: u64,
@@ -173,6 +180,10 @@ pub struct FortressSim {
     paths: Vec<u32>,
     items: EntityTable<Item>,
     icols: ItemColumns,
+    fluid: ChunkedGrid3<u8>,
+    fluid_active: ActiveChunkSet,
+    balance: fluids::FluidBalance,
+    aquifer_sources: Vec<Pos3>,
     item_index: CategoryIndex<ItemId>,
     jobs: JobBoard<JobKind, ResidentId>,
     reservations: Reservations<ResKey, ResidentId>,
@@ -190,6 +201,16 @@ pub struct FortressSim {
 /// Reused buffers. Their contents never survive a phase.
 struct Scratch {
     chunks: Vec<ChunkId>,
+    fluid_marks: Vec<bool>,
+    fluid_changed: Vec<ChunkId>,
+    fluid_chunks: Vec<ChunkId>,
+    fluid_may_change: Vec<bool>,
+    fluid_cells: Vec<(Pos3, u8)>,
+    transfers: Vec<fluids::Transfer>,
+    grants: Vec<(fluids::Transfer, u8, bool)>,
+    evaporating: Vec<Pos3>,
+    fluid_tiles: Vec<(Pos3, Tile)>,
+    dead: Vec<ResidentId>,
     ids: Vec<ResidentId>,
     workers: Vec<(ResidentId, Pos3)>,
     assignments: Vec<(ResidentId, JobId)>,
@@ -214,8 +235,20 @@ impl Scratch {
         let residents = config.max_residents as usize;
         let items = config.max_items as usize;
         let k = config.job_candidates as usize;
+        let tiles = (config.world_size_xy * config.world_size_xy * config.world_depth) as usize;
+        let chunk_count = tiles / sim_core::physics::CHUNK_VOLUME + 64;
         Self {
             chunks: Vec::with_capacity(4096),
+            fluid_marks: vec![false; chunk_count * 2],
+            fluid_changed: Vec::with_capacity(chunk_count * 2),
+            fluid_chunks: Vec::with_capacity(chunk_count * 2),
+            fluid_may_change: Vec::with_capacity(chunk_count * 2),
+            fluid_cells: Vec::with_capacity(sim_core::physics::CHUNK_VOLUME),
+            transfers: Vec::with_capacity(tiles / 4 + 4096),
+            grants: Vec::with_capacity(tiles / 4 + 4096),
+            evaporating: Vec::with_capacity(4096),
+            fluid_tiles: Vec::with_capacity(tiles / 8 + 4096),
+            dead: Vec::with_capacity(residents),
             ids: Vec::with_capacity(residents),
             workers: Vec::with_capacity(residents),
             assignments: Vec::with_capacity(residents),
@@ -376,6 +409,11 @@ impl FortressSim {
             paths: vec![0; residents as usize * config.max_path_nodes as usize],
             items: EntityTable::with_capacity(items),
             icols: ItemColumns::with_capacity(items as usize),
+            fluid_active: ActiveChunkSet::new(&world, config.physics.sleep_after),
+            fluid: world::generate_fluids(&config)
+                .ok_or_else(|| SimError::InvalidConfig("could not reserve fluids".into()))?,
+            balance: fluids::FluidBalance::default(),
+            aquifer_sources: Vec::with_capacity(1 << 16),
             item_index: CategoryIndex::new(w, w, d, 3, items)
                 .ok_or_else(|| SimError::InvalidConfig("could not create item index".into()))?,
             jobs: JobBoard::new(config.max_jobs as usize, w, w, d),
@@ -396,6 +434,118 @@ impl FortressSim {
             world,
             config,
         })
+    }
+
+    /// Prepares derived physics state after creation or loading.
+    fn init_physics(&mut self) {
+        self.scratch.fluid_marks.clear();
+        self.scratch
+            .fluid_marks
+            .resize(self.fluid.chunk_count(), false);
+        self.fluid_active
+            .set_sleeping_enabled(self.config.physics.sleeping);
+        self.wake_fluid_chunks();
+        self.rebuild_aquifer_sources();
+    }
+
+    /// Records a death once per tick and despawns the resident at the tick end.
+    pub(crate) fn kill(&mut self, id: ResidentId, cause: Death) {
+        if self.scratch.dead.contains(&id) || !self.residents.is_alive(id) {
+            return;
+        }
+        self.scratch.dead.push(id);
+        let count = &mut self.counters.deaths[cause as usize];
+        *count = count.saturating_add(1);
+        self.ops.push(
+            (SOURCE_RESIDENT, id.to_u64()),
+            1,
+            EntityCommand::Spawn(Op::DespawnResident(id)),
+        );
+    }
+
+    /// Nearest safe tile in rings around `at`: standable, dry, not hot, and
+    /// reachable; a swimming resident only considers adjacent tiles.
+    fn flee_target(&self, at: Pos3) -> Option<Pos3> {
+        let swimming = !self.connectivity.is_standable(at);
+        let max = if swimming { 1 } else { 12 };
+        for r in 1..=max {
+            for dz in [0, 1, -1] {
+                if swimming && dz != 0 {
+                    continue;
+                }
+                for y in at.y - r..=at.y + r {
+                    for x in at.x - r..=at.x + r {
+                        if (x - at.x).abs().max((y - at.y).abs()) != r {
+                            continue;
+                        }
+                        let p = Pos3::new(x, y, at.z + dz);
+                        if self.connectivity.is_standable(p)
+                            && fluids::level(self.fluid_at(p)) == 0
+                            && !self.too_hot(p)
+                            && (swimming || self.connectivity.reachable(at, p))
+                        {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Drowning, heat damage and the decision to flee.
+    fn hazards(&mut self) {
+        self.scratch.abort.clear();
+        for id in self.residents.iter_by_id() {
+            let Some(slot) = self.rslot(id) else { continue };
+            let at = self.rcols.position[slot];
+            let fluid = self.fluid_at(at);
+            let deep = fluids::level(fluid) > 0 && self.impassable_fluid(fluid);
+            let hot = self.too_hot(at);
+            let vitals = &mut self.rcols.vitals[slot];
+            vitals.submerged = if deep {
+                vitals.submerged.saturating_add(1)
+            } else {
+                0
+            };
+            if hot {
+                vitals.health = vitals.health.saturating_sub(1);
+            }
+            if vitals.submerged >= self.config.physics.drown_ticks || vitals.health == 0 {
+                self.scratch.abort.push(id);
+            }
+        }
+        for i in 0..self.scratch.abort.len() {
+            let id = self.scratch.abort[i];
+            let cause = match self.rslot(id) {
+                Some(slot) if self.rcols.vitals[slot].health == 0 => Death::Heat,
+                _ => Death::Drowned,
+            };
+            self.kill(id, cause);
+        }
+        self.scratch.abort.clear();
+        for id in self.residents.iter_by_id() {
+            let Some(slot) = self.rslot(id) else { continue };
+            let at = self.rcols.position[slot];
+            let wet = fluids::level(self.fluid_at(at)) >= 2 || !self.connectivity.is_standable(at);
+            if (wet || self.too_hot(at)) && !matches!(self.rcols.task[slot], Task::Flee { .. }) {
+                self.scratch.abort.push(id);
+            }
+        }
+        for i in 0..self.scratch.abort.len() {
+            let id = self.scratch.abort[i];
+            self.abort_task(id);
+            let Some(slot) = self.rslot(id) else { continue };
+            let at = self.rcols.position[slot];
+            if let Some(target) = self.flee_target(at) {
+                if self.connectivity.is_standable(at) {
+                    self.rcols.task[slot] = Task::Flee { target };
+                } else {
+                    // Swimming: one step to an adjacent standable tile.
+                    self.rcols.position[slot] = target;
+                }
+            }
+        }
     }
 
     pub(crate) fn rslot(&self, id: ResidentId) -> Option<usize> {
@@ -461,6 +611,10 @@ impl FortressSim {
             Needs {
                 hunger: below(random(1), u64::from(self.config.hungry_at) / 2) as u16,
                 fatigue: below(random(2), u64::from(self.config.tired_at) / 2) as u16,
+            },
+            Vitals {
+                health: HEALTH,
+                submerged: 0,
             },
             Task::Idle,
             None,
@@ -611,6 +765,7 @@ impl FortressSim {
     fn goal(&self, slot: usize) -> Option<Pos3> {
         match self.rcols.task[slot] {
             Task::Idle | Task::Sleep => None,
+            Task::Flee { target } => Some(target),
             Task::Eat { item } => self.item_ground(item),
             Task::Dig { site, .. } => Some(site),
             Task::Haul {
@@ -867,6 +1022,15 @@ impl FortressSim {
 
     fn update_connectivity(&mut self) {
         self.world.take_changed_chunks(&mut self.scratch.chunks);
+        for i in 0..self.scratch.chunks.len() {
+            let chunk = self.scratch.chunks[i];
+            self.fluid_active.wake_around(chunk);
+        }
+        if !self.scratch.chunks.is_empty() {
+            let chunks = std::mem::take(&mut self.scratch.chunks);
+            self.update_aquifer_sources(&chunks);
+            self.scratch.chunks = chunks;
+        }
         let changed = self.scratch.chunks.len() as u64;
         self.diag.changed_chunks += changed;
         self.diag.last_changed_chunks = changed;
@@ -1284,6 +1448,7 @@ impl FortressSim {
             }
             match task {
                 Task::Idle | Task::Sleep => {}
+                Task::Flee { .. } => self.release_and_idle(slot, id),
                 Task::Eat { item } => {
                     if self.item_ground(item) != Some(at) {
                         self.scratch.abort.push(id);
@@ -1410,7 +1575,9 @@ impl FortressSim {
                     if self.rcols.work[slot] == 1
                         || tick_work(&mut self.rcols.work[slot], self.config.build_ticks)
                     {
-                        if self.scratch.occupied.binary_search(&target).is_ok() {
+                        if self.scratch.occupied.binary_search(&target).is_ok()
+                            || self.fluid_at(target) != 0
+                        {
                             // Wait deterministically until the tile is clear.
                             self.rcols.work[slot] = 1;
                             self.diag.build_waits += 1;
@@ -1468,14 +1635,14 @@ impl FortressSim {
             if let Some(slot) = self.rslot(id)
                 && self.rcols.needs[slot].hunger >= self.config.starve_at
             {
-                self.counters.deaths[Death::Hunger as usize] += 1;
-                self.ops.push(
-                    (SOURCE_RESIDENT, id.to_u64()),
-                    1,
-                    EntityCommand::Spawn(Op::DespawnResident(id)),
-                );
+                self.scratch.abort.push(id);
             }
         }
+        for i in 0..self.scratch.abort.len() {
+            let id = self.scratch.abort[i];
+            self.kill(id, Death::Hunger);
+        }
+        self.scratch.abort.clear();
         self.reservations.expired(
             self.tick,
             self.config.reservation_timeout,
@@ -1626,6 +1793,9 @@ impl Simulation for FortressSim {
             }
         }
         sim.events.push(sim.config.caravan_interval, Event::Caravan);
+        sim.balance.initial = sim.count_fluids();
+        sim.balance.total = sim.balance.initial;
+        sim.init_physics();
         Ok(sim)
     }
 
@@ -1639,16 +1809,21 @@ impl Simulation for FortressSim {
             work();
             probe.exit(name);
         }
+        self.scratch.dead.clear();
         if self.config.debug_shuffle_slots {
             self.shuffle_slots();
         }
         phase(probe, "commands", || self.commands(commands));
         phase(probe, "connectivity", || self.update_connectivity());
-        phase(probe, "needs", || self.needs());
+        phase(probe, "needs", || {
+            self.hazards();
+            self.needs();
+        });
         phase(probe, "job_assign", || self.job_assign());
         phase(probe, "path", || self.path());
         phase(probe, "move", || self.movement());
         phase(probe, "work", || self.work());
+        phase(probe, "fluids", || self.fluids());
         phase(probe, "lifecycle", || self.lifecycle());
         phase(probe, "environment", || self.environment());
         self.tick = self.tick.saturating_add(1);
@@ -1679,11 +1854,11 @@ impl Simulation for FortressSim {
     }
 
     fn snapshot_version() -> u32 {
-        2
+        3
     }
 
     fn min_snapshot_version() -> u32 {
-        1
+        3
     }
 
     fn load_warnings(&self) -> Vec<String> {
