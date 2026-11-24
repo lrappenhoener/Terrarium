@@ -16,7 +16,10 @@ pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
     jobs::{Assigner, JobBoard, JobId, JobState, Reservations, job_distance},
-    path::{AStar, Connectivity, PathRequestQueue, PathResult, QueueStats, SearchOutcome},
+    path::{
+        AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
+        SearchOutcome,
+    },
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
     space::{ChunkId, ChunkedGrid3, Pos3, Tile, TileKind, standable, walk_neighbors},
@@ -98,27 +101,29 @@ pub(crate) struct Diagnostics {
     pub changed_chunks: u64,
     pub last_changed_chunks: u64,
     pub lowest_level: i32,
-    pub hpa_fallbacks: u64,
 }
 
-pub(crate) enum Pathfinder {
-    AStar(AStar<Pos3>),
+/// Path search in the configured mode. The hierarchical mode falls back to A*
+/// when its abstract graph finds no path, for example across ramp-only or
+/// diagonal-only chunk crossings. Both modes depend only on the tiles.
+pub(crate) struct Pathfinder {
+    astar: AStar<Pos3>,
+    hierarchical: Option<Box<HierarchicalPathfinder>>,
+    pub fallbacks: u64,
 }
 
 impl Pathfinder {
     fn new(kind: Pathfinding, world: &ChunkedGrid3<Tile>, limit: u32) -> Self {
-        match kind {
-            Pathfinding::Astar => {
-                Self::AStar(AStar::with_capacity(world.len(), limit as usize * 8 + 64))
-            }
-            Pathfinding::Hierarchical => {
-                Self::AStar(AStar::with_capacity(world.len(), limit as usize * 8 + 64))
-            }
+        Self {
+            astar: AStar::with_capacity(world.len(), limit as usize * 8 + 64),
+            hierarchical: (kind == Pathfinding::Hierarchical)
+                .then(|| Box::new(HierarchicalPathfinder::new(world, limit))),
+            fallbacks: 0,
         }
     }
 
-    fn update(&mut self, world: &ChunkedGrid3<Tile>, chunks: &[ChunkId]) {
-        let _ = (world, chunks);
+    pub(crate) fn hpa_stats(&self) -> Option<sim_core::path::HpaStats> {
+        self.hierarchical.as_ref().map(|hpa| hpa.stats)
     }
 
     fn search(
@@ -129,10 +134,20 @@ impl Pathfinder {
         limit: u32,
         path: &mut Vec<Pos3>,
     ) -> SearchOutcome {
-        match self {
-            Self::AStar(astar) => {
-                astar.search(&LayeredWalkTopology::new(world), start, goal, limit, path)
-            }
+        let topology = LayeredWalkTopology::new(world);
+        let Some(hpa) = &mut self.hierarchical else {
+            return self.astar.search(&topology, start, goal, limit, path);
+        };
+        let outcome = hpa.search(world, start, goal, limit, path);
+        if outcome.result != PathResult::Unreachable {
+            return outcome;
+        }
+        self.fallbacks += 1;
+        let rest = limit.saturating_sub(outcome.expansions).max(1);
+        let fallback = self.astar.search(&topology, start, goal, rest, path);
+        SearchOutcome {
+            result: fallback.result,
+            expansions: outcome.expansions.saturating_add(fallback.expansions),
         }
     }
 }
@@ -777,7 +792,6 @@ impl FortressSim {
         self.diag.last_changed_chunks = changed;
         if changed != 0 {
             self.connectivity.update(&self.world, &self.scratch.chunks);
-            self.pathfinder.update(&self.world, &self.scratch.chunks);
         }
     }
 

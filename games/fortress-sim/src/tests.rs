@@ -460,3 +460,27 @@ fn golden_small_snapshot_loads_and_continues() {
     }
     assert_eq!(sim.state_hash(), 0x87e72f66415229d4);
 }
+
+#[test]
+fn golden_hash_with_hierarchical_pathfinding() {
+    let schedule = scenario();
+    let config = FortressConfig {
+        pathfinding: Pathfinding::Hierarchical,
+        ..FortressConfig::default()
+    };
+    let mut sim = FortressSim::new(42, config).unwrap();
+    run_with_scenario(&mut sim, &schedule, 2000, |sim| {
+        if sim.tick() % 100 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    });
+    assert_eq!(
+        sim.state_hash(),
+        GOLDEN_HIERARCHICAL,
+        "{:#018x}",
+        sim.state_hash()
+    );
+    assert!(sim.counters.dug >= 450);
+}
+
+const GOLDEN_HIERARCHICAL: u64 = 0x000538f6ea0f8d1e;

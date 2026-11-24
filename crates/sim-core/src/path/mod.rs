@@ -2,8 +2,10 @@
 //! incrementally maintained reachability.
 
 mod connectivity;
+mod hierarchical;
 
 pub use connectivity::{Connectivity, ConnectivityStats};
+pub use hierarchical::{HierarchicalPathfinder, HpaStats};
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 

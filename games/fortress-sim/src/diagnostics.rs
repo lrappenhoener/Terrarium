@@ -23,6 +23,7 @@ impl FortressSim {
         let ticks = self.diag.path_ticks.max(1) as f64;
         let per = |value: u64, count: u64| value as f64 / count.max(1) as f64;
         let c = &self.connectivity.stats;
+        let hpa = self.pathfinder.hpa_stats().unwrap_or_default();
         let custom_gauges = [
             ("residents", self.residents.len() as f64),
             ("items_stone", kinds[ItemKind::Stone as usize] as f64),
@@ -70,7 +71,13 @@ impl FortressSim {
             ),
             ("blocked_steps", self.diag.blocked_steps as f64),
             ("build_waits", self.diag.build_waits as f64),
-            ("hpa_fallbacks", self.diag.hpa_fallbacks as f64),
+            ("hpa_fallbacks", self.pathfinder.fallbacks as f64),
+            ("hpa_chunk_rebuilds", hpa.chunk_rebuilds as f64),
+            ("hpa_chunk_hits", hpa.chunk_hits as f64),
+            ("hpa_face_rebuilds", hpa.face_rebuilds as f64),
+            ("hpa_local_hits", hpa.local_hits as f64),
+            ("hpa_abstract_expansions", hpa.abstract_expansions as f64),
+            ("hpa_refine_expansions", hpa.refine_expansions as f64),
             ("changed_chunks_total", self.diag.changed_chunks as f64),
             ("connectivity_updates", c.updates as f64),
             ("connectivity_changed_tiles", c.changed_tiles as f64),
