@@ -556,3 +556,41 @@ fn changed_generator_version_is_reported_before_reconstruction() {
     let loaded = FortressSim::load_snapshot(legacy).unwrap();
     assert_eq!(loaded.load_warnings().len(), 1);
 }
+
+#[test]
+fn querying_the_full_view_every_tick_leaves_hashes_unchanged() {
+    use crate::view::View;
+    let schedule = scenario();
+    let mut plain = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut observed = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut hashes = Vec::new();
+    run_with_scenario(&mut plain, &schedule, 600, |sim| {
+        hashes.push(sim.state_hash())
+    });
+    let (mut residents, mut items, mut jobs, mut path) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut tiles = 0usize;
+    let mut index = 0;
+    run_with_scenario(&mut observed, &schedule, 600, |sim| {
+        let view = sim.view();
+        for chunk in 0..view.chunk_count() as u32 {
+            let _ = view.chunk_version(chunk);
+            view.chunk_tiles(chunk, |p, _| {
+                tiles += 1;
+                let _ = view.debug_region(p);
+            });
+        }
+        view.residents(&mut residents);
+        view.items(&mut items);
+        view.jobs(&mut jobs);
+        for r in &residents {
+            view.path(r.id, &mut path);
+            let _ = view.describe(r.id);
+        }
+        let _ = (view.stockpiles().len(), view.counts(), View::chunk_dims());
+        assert_eq!(sim.state_hash(), hashes[index], "tick {}", sim.tick());
+        index += 1;
+    });
+    assert_eq!(tiles, 600 * observed.world.len());
+    assert!(!items.is_empty() && !jobs.is_empty());
+}

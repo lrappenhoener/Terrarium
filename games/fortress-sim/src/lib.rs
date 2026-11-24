@@ -8,9 +8,11 @@ mod diagnostics;
 mod render;
 mod snapshot;
 mod types;
+pub mod view;
 mod world;
 
 pub use config::{FortressConfig, MaterialConfig, Pathfinding};
+pub use sim_core::space::{Pos3, Tile, TileKind};
 pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 
 use sim_core::{
@@ -23,7 +25,7 @@ use sim_core::{
     },
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
-    space::{ChunkId, ChunkedGrid3, Pos3, Tile, TileKind, standable, walk_neighbors},
+    space::{ChunkId, ChunkedGrid3, standable, walk_neighbors},
     topology::LayeredWalkTopology,
 };
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};

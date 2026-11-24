@@ -120,6 +120,13 @@ impl Connectivity {
         self.index(p).is_some_and(|i| self.region[i] != NONE)
     }
 
+    /// Region label of a standable tile, for debug overlays only. Labels are
+    /// derived, layout-dependent values; behavior must never depend on them.
+    pub fn debug_region(&self, p: Pos3) -> Option<u32> {
+        let region = self.region[self.index(p)?];
+        (region != NONE).then(|| self.parent[region as usize])
+    }
+
     /// Number of allocated region IDs, for diagnostics.
     pub fn id_count(&self) -> usize {
         self.parent.len()
