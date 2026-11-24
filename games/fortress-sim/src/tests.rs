@@ -556,4 +556,3 @@ fn changed_generator_version_is_reported_before_reconstruction() {
     let loaded = FortressSim::load_snapshot(legacy).unwrap();
     assert_eq!(loaded.load_warnings().len(), 1);
 }
-
