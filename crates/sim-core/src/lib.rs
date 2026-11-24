@@ -3,6 +3,7 @@
 //! Reusable deterministic simulation building blocks.
 
 pub mod behavior;
+pub mod content;
 pub mod entity;
 pub mod index;
 pub mod intent;

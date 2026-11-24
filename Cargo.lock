@@ -592,6 +592,7 @@ dependencies = [
  "serde",
  "sim-host",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
