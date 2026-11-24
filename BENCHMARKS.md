@@ -131,3 +131,49 @@ Seed 42 und Standardkonfiguration, Release-Build auf `zen`. Drei Save/Load-Paare
 | Laden und Rekonstruktion | 1.075.429 | 15,63 |
 
 Alle fortgesetzten Läufe erreichten den Referenz-Hash `0x19eb3e87d333006d` bei Tick 5.000. Die genauen Abweichungstests und der geprüfte 50.000-Tick-Lauf sind in [VERIFICATION.md](VERIFICATION.md) dokumentiert.
+
+## Etappe 3 – Fortress
+
+Gleicher Rechner, Rust 1.97.1, Release-Profil. Alle Werte sind Mediane aus drei Läufen mit Seed 42, Szenario `games/fortress-sim/data/scenario_dig_in.toml` und Phasenmessung. Jungle erreichte am Messtag 797 TPS (Median, 5.000 Ticks) gegenüber 742 TPS für den Etappe-2-Commit `784c63e` auf demselben Rechner. Die Änderungen kosten also keine Step-Zeit; die absolut niedrigeren Werte gegenüber der Tabelle oben gehen auf den Rechnerzustand zurück.
+
+### Standardlauf (A*, 20.000 Ticks, 96×96×32)
+
+TPS 13.906 · p50 61,42 µs · p99 249,74 µs · Max 4.097 µs · 0 Step-Allokationen. Hash `0xae5ee3d9cc6dbcc2`.
+
+| Phase | p50 µs | p99 µs | Max µs | Anteil |
+| --- | ---: | ---: | ---: | ---: |
+| `commands` | 0,02 | 0,12 | 341,7 | 0,07 % |
+| `connectivity` | 0,02 | 8,38 | 847,4 | 1,02 % |
+| `needs` | 0,52 | 8,95 | 1.933,3 | 3,02 % |
+| `job_assign` | 39,89 | 145,23 | 3.602,0 | 62,38 % |
+| `path` | 0,16 | 63,51 | 2.696,2 | 3,75 % |
+| `move` | 0,28 | 4,17 | 328,7 | 0,77 % |
+| `work` | 16,15 | 33,63 | 2.855,5 | 24,81 % |
+| `lifecycle` | 2,13 | 3,85 | 2.453,1 | 3,45 % |
+| `environment` | 0,03 | 0,06 | 26,6 | 0,05 % |
+
+Die zehn langsamsten Ticks (2,9–4,4 ms) liegen in jedem Lauf auf anderen Ticks und in anderen Phasen (z. B. 9.716, 9.232, 17.757). Es handelt sich um Scheduling-Rauschen, nicht um deterministische Spitzen; die Phasenmaxima liegen weit über dem jeweiligen p99.
+
+Pfad- und Erreichbarkeitsstatistik (deterministisch, in allen Läufen identisch): 1,35 Suchen pro Tick, 64,5 Expansionen pro Suche, Ø 14,35 Pfadknoten, 3.099 gefundene Pfade, 0 `Unreachable`, 0 `BudgetExceeded`, 0 vom Vorab-Check übersprungene Anfragen, 0 Ticks Wartezeit in der Queue. Erreichbarkeit: 860 Aktualisierungen, 1.131 geänderte Kacheln, 1.115 Verschmelzungen, 12 Flutfüllungen mit Ø 6.241 Kacheln (die Mauerbauten teilen die große Oberflächenregion).
+
+### A* gegen hierarchisch (Szenario, 20.000 Ticks)
+
+| Modus | TPS | p50 µs | p99 µs | `path` p99 µs | `path`-Anteil | Expansionen/Suche | Ø Pfadknoten | Fallbacks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A* | 13.906 | 61,42 | 249,74 | 63,51 | 3,75 % | 64,5 | 14,35 | – |
+| hierarchisch | 13.617 | 62,19 | 255,97 | 122,07 | 8,09 % | 152,6 | 15,27 (+6,4 %) | 0 |
+
+HPA*-Caches: 561 Chunk-Neuberechnungen gegenüber 16.423 Treffern und 2.742 Flächen-Neuberechnungen. 1.788 Anfragen wurden innerhalb eines Chunks beantwortet. Im Szenario sind die Wege kurz (≈14 Knoten). HPA* bezahlt die lokalen Dijkstra-Suchen von Start und Ziel zu allen Eingängen ihrer Chunks und braucht daher mehr Expansionen als direktes A*.
+
+### Sweep (5.000 Ticks, `initial_residents` und `world_size_xy` paarweise)
+
+| Modus | Bewohner, Seitenlänge | TPS | p50 µs | p99 µs | ns/Entität/Tick | `job_assign` | `work` | `path` | `needs` | `connectivity` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A* | 25, 96 | 26.006 | 31,98 | 154,27 | 73,78 | 51,8 % | 21,1 % | 12,6 % | 1,7 % | 2,6 % |
+| A* | 100, 128 | 16.276 | 42,07 | 265,52 | 94,46 | 60,1 % | 18,4 % | 9,2 % | 3,4 % | 2,5 % |
+| A* | 400, 192 | 8.662 | 82,17 | 666,65 | 99,87 | 52,9 % | 15,9 % | 6,8 % | 17,4 % | 2,3 % |
+| hierarchisch | 25, 96 | 20.835 | – | 243,13 | 92,7 | – | – | 28,4 % | – | – |
+| hierarchisch | 100, 128 | 13.020 | – | 369,16 | 118,1 | – | – | 23,6 % | – | – |
+| hierarchisch | 400, 192 | 7.098 | – | 752,61 | 121,9 | – | – | 13,1 % | – | – |
+
+Entitäten umfassen Gegenstände. Von 25 auf 400 Bewohner bei vierfacher Kachelzahl steigen die Kosten pro Entität und Tick um 35 % (A*). Einzig `needs` skaliert nicht: Bei 400 Bewohnern reichen die 60 Startrationen nicht, viele sind gleichzeitig hungrig (81 verhungern), und jeder durchsucht die Liste freier Nahrung. Das kostet O(Hungrige × Nahrung) pro Tick. `connectivity` bleibt niedrig, weil Flutfüllungen selten sind; ihre Kosten wachsen mit der Oberflächenregion, also quadratisch mit der Seitenlänge.

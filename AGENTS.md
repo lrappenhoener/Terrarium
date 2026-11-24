@@ -5,6 +5,7 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 ## Architektur
 
 - Drei Schichten: `sim-host` und `sim-runner` stellen generische Schnittstellen ohne Domänenlogik bereit, `sim-core` enthält wiederverwendbare Simulationsbausteine, `games/*` enthält Regeln und Inhalte.
+- `sim-core` bleibt domänenneutral. Begriffe wie Bewohner, Erz oder Lager gehören in die Spiel-Crates; `sim-core` kennt nur opake Materialien, Jobs und Reservierungen.
 - Externe ECS-Crates benötigen eine dokumentierte Begründung. Speicherlayout und Iterationsreihenfolge bleiben unter unserer Kontrolle.
 
 - Die Library von `sim-runner` und ihre Module kennen als Spielschnittstelle ausschließlich `sim-host`. Spielregeln und konkrete Spieltypen gehören in die Spiel-Crates.
@@ -30,6 +31,9 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Teure Updates mit `(tick + key) % interval == 0` über Entitäten oder Kacheln verteilen.
 - Abgeleitete Strukturen (Erreichbarkeit, Indizes, Weg-Caches, abstrakte Graphen) werden nie gespeichert oder gehasht und beim Laden neu aufgebaut. Das Verhalten hängt nur von ihren layoutunabhängigen Antworten ab, etwa „erreichbar ja/nein“, nie von internen ID-Werten. Ihre gezielte Aktualisierung wird gegen eine vollständige Neuberechnung getestet.
 - Jede Suche ist begrenzt: Expansionslimit pro Suche und Budget pro Tick. Unbegrenzte Suchen sind verboten.
+- Kachel-Änderungen werden nur gesammelt und am Phasenende in Positionsreihenfolge angewendet. Danach werden alle abgeleiteten Strukturen über die Änderungsverfolgung der Chunks aktualisiert.
+- Erreichbarkeit vor Pfadsuche: Kein Job und kein Ziel wird ohne vorherigen `reachable`-Check gesucht. Unerreichbare Jobs werden nicht zugeteilt.
+- Unterschiedliche Entitätsarten verwenden typisierte IDs (`TypedId<M>`). Job-IDs sind stabile, fortlaufende Zähler und werden nie wiederverwendet.
 
 ## Runner-Schnittstelle
 

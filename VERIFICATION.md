@@ -124,3 +124,110 @@ Geprüft am Commit `1169dfc` mit `scripts/ci.sh` (Exit 0): `cargo fmt --all -- -
 - **0c Schlüssel-Diff:** Dumps vergleichen `key<TAB>value` nach Schlüssel. Eine zusätzliche Entität erscheint als genau eine Zeile `only in B: entity:2:0 …`. Zeilen ohne Tab gelten als ganzer Schlüssel.
 - **Schritte 1–3:** `ChunkedGrid3` (16×16×8, Morton-Chunks, Versionen, Änderungsliste) stimmt mit einem flachen Modell überein. `Tile` belegt 4 Bytes. Bewegungsregeln sind getestet und auf Zufallswelten symmetrisch. A* liefert auf zufälligen Schicht- und 2D-Welten dieselben Kosten wie Dijkstra; die Warteschlange ist unabhängig von der Einfügereihenfolge. Die gezielte Erreichbarkeitsaktualisierung stimmt nach über 5.000 zufälligen Grab-, Mauer-, Treppen- und Rampenoperationen (vier Seeds) in jedem Schritt mit einer Neuberechnung überein; zwei Mutationen (keine Flutfüllung, keine Vereinigung) lässt der Test scheitern.
 - **Abweichung:** Die vorgegebene Heuristik `oktil + 20·|Δz|` ist mit Rampen nicht zulässig: Eine Rampe überwindet einen orthogonalen Schritt und eine Ebene für 20, die Heuristik schätzt 30. Verwendet wird `20·dz + max(0, oktil − 10·dz)`; ein Test belegt das Gegenbeispiel.
+
+## Etappe 3 – Abschlussbericht
+
+`scripts/ci.sh` (um Fortress ergänzt) lief mit Exit 0: fmt, striktes Clippy, je 125 Tests in Debug und Release, Dummy- und Jungle-Läufe, Fortress mit Determinismus, Save/Load (Roundtrips 500 und 7.777), `--max-step-allocs 0` und `--budget-p99-us 10000`, ein hierarchischer Lauf, Fortress-Replay, Snapshot mit ASCII-Ansicht sowie `release-checked`-Langläufe (Jungle 50.000 und Fortress 20.000 Ticks). Benchmark-Zahlen stehen in `BENCHMARKS.md`.
+
+1. **Schritt 0:** siehe Zwischenbericht Teil A. Der Golden Snapshot von Jungle wird byteidentisch neu kodiert. Das Panic-Replay reproduziert Tick 123 mit Exit-Code 7. Der Schlüssel-Diff meldet eine zusätzliche Entität als genau eine Zeile.
+2. **Fortress-Lauf** (A*, 20.000 Ticks, Median aus 3 Läufen): 13.906 TPS, p50 61,42 µs, p99 249,74 µs, Max 4,1 ms, 0 Step-Allokationen. Den größten Anteil haben `job_assign` (62 %) und `work` (25 %). Die langsamsten Ticks liegen in jedem Lauf woanders und gehen auf Scheduling-Rauschen zurück.
+3. **Pfade und Erreichbarkeit:** 1,35 Suchen pro Tick, 64,5 Expansionen pro Suche, Ø 14,35 Pfadknoten, 0 `Unreachable`, 0 `BudgetExceeded`, keine Wartezeit in der Queue. 860 Erreichbarkeits-Aktualisierungen mit 1.115 Verschmelzungen. Nur die 12 Mauerbauten lösten Flutfüllungen aus (Ø 6.241 Kacheln).
+4. **A\* gegen hierarchisch:** HPA* braucht 152,6 statt 64,5 Expansionen pro Suche, und `path` wird doppelt so teuer (p99 122 statt 64 µs). Die Wege sind 6,4 % länger (Knoten), Fallbacks gab es keine. **Standard bleibt `astar`:** Im Szenario sind die Wege kurz (≈14 Knoten), deshalb überwiegen die lokalen Start- und Zielsuchen von HPA* dessen Ersparnis. HPA* bleibt als deterministische Option für lange Wege in großen Welten bestehen.
+5. **Sweep:** Von 25 Bewohnern auf 96² bis 400 Bewohner auf 192² steigen die Kosten pro Entität und Tick nur um 35 %. `needs` skaliert nicht: Bei 400 Bewohnern reicht die Startnahrung nicht (81 verhungern), und jeder Hungrige durchsucht die freie Nahrung (O(Hungrige × Nahrung)). Flutfüllungen wachsen quadratisch mit der Seitenlänge, sind aber selten.
+6. **ASCII bei Tick 20.000** (Ausschnitte). Oberste Tunnel-Ebene z=14 (x 0–63, y 24–62) mit Lager vor dem Berg, Hallen, Tor aus Mauer, Tür und Mauer bei x=16 sowie den Treppen `>` beider Schächte:
+```text
+level z=14 tick=20000
+.oooooooooooo..........::::#####################################
+.oooooooooooo.........::::######################################
+.oooooooooooo........::::#######################################
+.ooooo$oooooo........:::########################################
+.oooooooooooo.......:::#########################################
+.oooooooooooo......:::#################***######################
+.oooooooooooo......:###################*#****###################
+.oooooooooooo.....:#################****##**####################
+.oooooooooooo.....:#################*###########################
+.oooooooooooo....:##############################################
+.oooooooooooo....:##############################################
+.oooooooooooo...:###############################################
+.oooooooooooo...::##############################################
+.fooooofooooo..:::##############################################
+.foofffff@ooo..:::##############################################
+.fffffffffooo..::###############################################
+.fffffffffooo..::###############################################
+.ffffffffff@o.:::###############################################
+.fffffffff@@o.:::#####ooooooooo#################################
+.fffffffffff@.::######ooooooooo#################################
+..............::######o$ooooooo>################################
+..............::######o$$oooooo#################################
+..............::######ooooooooo#################################
+f...............W.......................########################
+ff..@...........+.......................>#######################
+ff..............W.......................########################
+..............::######.........#################################
+..............::######.........#################################
+..............::######.........#################################
+..............::######.........#################################
+..............::######.........#################################
+..............::####################################*###########
+...............::###################################*###########
+...............:###################################**###########
+...............:::#################################*############
+...............:::#################################*############
+```
+
+Tiefste Schacht-Ebene z=2 (x 30–70, y 37–59): Halle mit Mauer- und Türreihe bei x=46, der Raum am Schachtfuß ist mit Steinen belegt (die `StairUp`-Kachel bei (40,48) liegt unter einem Stein):
+```text
+level z=2 tick=20000
+#########################################
+#########################################
+#########################################
+##################oooooooooooooooo#######
+##################oooooooooooooooo#######
+##################oooooooooooooooo#######
+##################oooooooooooooooo#######
+##################oooooooooooooooo#######
+############oooooooooooooooooooooo#######
+############oooooWoooooooooooooooo#######
+############oooooWoooooooooooooooo#######
+###########oooooo+oooooooooooooooo#######
+############oooooWoooooooooooooooo#######
+############oooooWoooooooooooooooo#######
+############oooooooooooooooooooooo#######
+##################oooooooooooooooo#######
+##################oooooooooooooooo#######
+###########*######oooooooooooooooo#######
+###########*######oooooooooooooooo#######
+########*****#####oooooooooooooooo#######
+#########**#*############################
+#########################################
+#########################################
+```
+
+7. **Referenzen:** Jungle `0x5317cfd6e2e12024` (Tick 1.000) und `0x19eb3e87d333006d` (Tick 5.000) sind unverändert, der Jungle-Golden-Snapshot lädt, Dummy bleibt bei `0x20f21cbeee53c309`. Fortress-Golden-Hashes (Seed 42, Szenario, 2.000 Ticks): A* `0x0647c8823c28e430`, hierarchisch `0x000538f6ea0f8d1e`. Golden Snapshot `fortress-v1-small.bin`: `0x4b5fe3168d2245db` bei Tick 300, `0x87e72f66415229d4` bei Tick 601. Szenario bei Tick 20.000: `0xae5ee3d9cc6dbcc2`.
+8. **Gefundene und behobene Fehler:**
+   - Arbeiter verhungerten an der Inspektionsgrenze, weil verschüttete und unbearbeitbare Jobs die nächsten Kandidaten belegten. Der Index enthält jetzt nur bearbeitbare Jobs.
+   - Baustellen warteten ewig auf liegende Steine. Steine auf Baustellen werden jetzt mit Vorrang weggeräumt, notfalls in die Nähe statt ins Lager.
+   - Ablegen beim Aufgabenabbruch überbelegte Lagerplätze; die Invariante schlug zu Recht an. Abgelegt wird jetzt auf einem sicheren Nachbarfeld.
+   - `nearest_open` prüfte bei wenigen Jobs O(r⁴) Zellen (2 ms pro Tick). Jetzt werden nur Schalen durchlaufen, kleine Indizes werden direkt gescannt.
+   - Der Platzhaltertausch von `Assigner` allokierte einmal pro Tick.
+   - `new()` panickte, wenn das Embark-Feld außerhalb der Welt lag. Jetzt kommt ein Config-Fehler.
+   - Der Mauertest prüfte die Erreichbarkeit im selben Tick wie den Bau; sie wird aber erst zu Beginn des nächsten Ticks aktualisiert.
+   - Shuffle-, Save/Load- und Erreichbarkeitstests fanden keine Abweichung. Mutationen der Erreichbarkeit (fehlende Flutfüllung, fehlende Vereinigung) lassen den Pflichttest scheitern.
+9. **Eigene Entscheidungen und Abweichungen:**
+   - Die Heuristik ist `20·dz + max(0, oktil − 10·dz)`, weil die vorgegebene mit Rampen überschätzt.
+   - Rampen verbinden nur orthogonale Nachbarn. Graben ist orthogonal oder vertikal über passende Treppen möglich.
+   - Die Pfad-Queue ordnet nach (Einreichungstick, ID), damit hohe IDs nicht verhungern. Die letzte Suche eines Ticks darf das Budget um höchstens ein Suchlimit überschreiten.
+   - `AStar<N>` ist über den Knotentyp statt über die Topologie generisch. Kandidatensuchen sind auf `job_inspect_limit` (64) Prüfungen begrenzt.
+   - Der Berg ist an feste Koordinaten gebunden: Größere Welten im Sweep bekommen mehr Ebene, und das Szenario bleibt gültig.
+   - Snapshots speichern nur die Kacheln, die von der neu generierten Welt abweichen (39,7 kB bei Tick 20.000).
+   - HPA* speichert die Kosten zwischen den Eingängen eines Chunks; die konkrete Verfeinerung wird chunk-lokal und deterministisch neu gesucht. Diagonal- und Rampenübergänge zwischen Chunks sind keine Eingänge, dafür greift der A*-Fallback.
+   - Die Karawane bringt pro Bewohner eine Ration, mindestens 10, alle 1.000 Ticks.
+   - Diagnosezähler werden nicht gespeichert; die logischen Zähler (gegraben, gebaut, Tote …) werden gespeichert und gehasht.
+   - Das alte Replay-Format v1 wird nicht mehr gelesen.
+10. **Vorbereitung für Etappe 4 (Flüssigkeiten, Temperatur, Einstürze):**
+    - `ChunkedGrid3` braucht zusätzliche Kanäle pro Kachel (Füllstand, Temperatur) mit eigenen Versionszählern, damit Strömung nicht Erreichbarkeit und Weg-Caches invalidiert.
+    - Aktive Chunk-Mengen und Dirty-Regionen, damit Zellautomaten nur wache Chunks rechnen. Dafür eine feste, layoutunabhängige Update-Reihenfolge (Morton-Chunks, Doppelpuffer oder Schachbrett-Phasen).
+    - Gesammelte Kachel-Änderungen mit Konfliktauflösung, wenn mehrere Systeme dieselbe Kachel ändern.
+    - Für Einstürze eine Stützberechnung als abgeleitete Struktur mit Union-Find wie bei der Erreichbarkeit, inklusive Test gegen vollständige Neuberechnung.
+    - Bewegungsregeln mit Kosten oder Sperren durch Flüssigkeit.
+    - Chunk-Diff-Snapshots, die den bereits vorhandenen Diff gegen die generierte Welt chunkweise ablegen.

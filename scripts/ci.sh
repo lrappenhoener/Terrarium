@@ -31,7 +31,22 @@ status=0
 test "$status" -eq 1
 grep -F 'unsupported feature: snapshots' "$scratch/dummy.txt"
 
+scenario=games/fortress-sim/data/scenario_dig_in.toml
+"${runner[@]}" --game fortress --ticks 20000 --commands "$scenario" \
+    --verify-determinism --verify-save-load --roundtrip-at 500 --roundtrip-at 7777 \
+    --profile-phases --worst-ticks 10 --max-step-allocs 0 --budget-p99-us 10000 | tee "$scratch/fortress.txt"
+grep -Fx 'Save/Load OK (2 Roundtrips)' "$scratch/fortress.txt"
+"${runner[@]}" --game fortress --ticks 3000 --commands "$scenario" --set 'pathfinding="hierarchical"' \
+    --verify-determinism --verify-save-load --max-step-allocs 0 --budget-p99-us 10000
+"${runner[@]}" --game fortress --ticks 2000 --commands "$scenario" --record-replay "$scratch/fortress.simr"
+"${runner[@]}" --replay "$scratch/fortress.simr"
+"${runner[@]}" --game fortress --ticks 2000 --commands "$scenario" --save-snapshot-at 2000 --snapshot-dir "$scratch/snaps"
+cargo run -q -p fortress-sim --example ascii -- "$scratch/snaps/fortress-seed42-t2000.snap" 2 | grep -F 'level z=2 tick=2000'
+
 cargo run --profile release-checked -p sim-runner -- --game jungle --ticks 50000 \
     --verify-determinism | tee "$scratch/checked.txt"
 grep -Fx 'Tick 50000 (50000 ausgeführt)' "$scratch/checked.txt"
 grep -Fx 'Determinismus OK (500 Checkpoints)' "$scratch/checked.txt"
+cargo run --profile release-checked -p sim-runner -- --game fortress --ticks 20000 \
+    --commands games/fortress-sim/data/scenario_dig_in.toml --verify-determinism | tee "$scratch/fortress-checked.txt"
+grep -Fx 'Tick 20000 (20000 ausgeführt)' "$scratch/fortress-checked.txt"
