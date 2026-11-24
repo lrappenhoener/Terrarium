@@ -252,3 +252,42 @@ Speichern und Laden erzeugen die Welt neu, um Kacheln gegen den Generator zu dif
 | Fortress, Szenario, 20.000 Ticks | 16.005 | 20.233 | +26,42 % | −10,14 % | −5,328 % (2.000 Ticks) | `0xae5ee3d9cc6dbcc2` (beide) |
 
 Bei Jungle sind die Instruktionen identisch; der TPS-Unterschied ist Rauschen. Die absolute Jungle-Rate lag in dieser Sitzung bei ≈900 statt ≈1.450 TPS, ein Beispiel für die Schwankungen zwischen Sitzungen. Fortress gewinnt durch den Kategorie-Index bei unverändertem Verhalten.
+
+## Etappe 5 – Weltphysik
+
+Gemessen am 24.11.2026 auf `zen` (AMD Ryzen 7 9800X3D), Rust 1.97.1, Release-Profil, Seed 42, 20.000 Ticks, Phasenmessung. Alle Werte sind Mediane aus 3 Läufen. Stand `ce54c07` (mit Hysterese der Unpassierbar-Markierung).
+
+| Szenario | TPS | p50 µs | p99 µs | Max µs | Fluid-Chunks schlafend | Wärme-Chunks aktiv | End-Hash |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `dig_in` | 4.413 | 216,03 | 625,84 | 5.920 | 123/144 (85 %) | 0 | `0x661aec897fba0652` |
+| `flood` | 4.569 | 190,93 | 510,26 | 4.331 | 123/144 (85 %) | 0 | `0xed6cc7456121d81a` |
+| `magma` | 2.135 | 491,79 | 862,19 | 5.271 | 123/144 (85 %) | 2 | `0xfac8b755ad9c607d` |
+| `cavein` | 5.750 | 179,08 | 276,18 | 5.869 | 123/144 (85 %) | 0 | `0x350d729d31f3b480` |
+
+Alle vier Läufe bestanden zusätzlich `--verify-determinism --verify-save-load --max-step-allocs 0 --budget-p99-us 10000` (Exit 0).
+
+Phasen (Anteil, p99 µs, ns pro Skalierungseinheit):
+
+| Szenario | `fluids` | `temperature` | `support` | `collapse` | `job_assign` | `connectivity` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `dig_in` | 76,5 %, 416, 91,9/Fluid-Kachel | 0,2 %, 1,4 | 0,06 %, 3,7, 233/Prüfeinheit | 0,01 %, 0,2 | 12,7 %, 77 | 2,4 %, 71 |
+| `flood` | 88,3 %, 445, 83,5 | 0,2 %, 1,5 | 0,04 %, 0,6 | 0,02 %, 0,2 | 5,0 %, 53 | 0,8 %, 45 |
+| `magma` | 35,4 %, 443, 90,4 | 59,5 %, 418, 71,3/Wärme-Kachel | 0,02 %, 0,5 | 0,01 %, 0,3 | 2,3 %, 38 | 0,5 %, 47 |
+| `cavein` | 88,4 %, 233, 95,0 | 0,3 %, 1,6 | 0,06 %, 0,4 | 0,02 %, 0,2 | 5,6 %, 43 | 0,4 %, 30 |
+
+Schlimmste Ticks (Lauf 1): `dig_in` 10.959 (5,9 ms), `flood` 4.291 (17,4 ms, davon `fluids` 17,35 ms; in den Läufen 2 und 3 nicht unter den 10 schlimmsten, also Systemrauschen), `magma` 2.108 (4,3 ms), `cavein` 5.555 (5,9 ms). Vor der Hysterese lagen die Spitzen in `connectivity` (bis 11,4 ms), weil Wasserstände an der Schwelle die Regionen in jedem Tick neu füllten.
+
+**Kosten der Physik gegenüber Etappe 3/4.** Der Standardlauf `dig_in` fällt von 13.906 auf 4.413 TPS (p99 250 → 626 µs). Ursache ist der dauerhaft fließende Fluss im Osten: Quelle und Mündung halten 21 Chunks wach (≈3.500 aktive Fluid-Kacheln pro Tick). Das Budget p99 ≤ 10.000 µs bleibt mit Faktor 16 eingehalten.
+
+**Hysterese (A/B im selben Lauf, `dig_in`, Mediane aus 3):** vorher 2.827 TPS, p99 1.204 µs, Max 6.672 µs, 242 Flood-Fills; nachher 4.413 TPS, p99 626 µs, Max 5.920 µs.
+
+### Sweep Wassermenge (`scenario_flood.toml`, 5.000 Ticks, Median aus 3)
+
+| `physics.river_width` | Wasser gesamt | aktive Fluid-Kacheln/Tick | wache Chunks | TPS | p99 µs | `fluids` Anteil | `fluids` p99 µs | ns/aktive Kachel |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 16.358 | 3.531 | 42 | 3.503 | 536 | 88,1 % | 428 | 71,2 |
+| 3 | 25.297 | 3.761 | 45 | 3.079 | 1.097 | 88,8 % | 491 | 76,7 |
+| 6 | 37.785 | 4.038 | 45 | 2.917 | 629 | 89,3 % | 524 | 75,8 |
+| 12 | 62.806 | 4.574 | 45 | 2.516 | 683 | 90,6 % | 587 | 78,7 |
+
+Die Wassermenge vervierfacht sich, die Kosten pro aktiver Kachel steigen nur um 10,6 %. Die Kosten folgen den aktiven Kacheln und nicht der Wassermenge, weil ruhendes Wasser schläft. Der leichte Anstieg pro Kachel liegt in `fluids` (mehr Transfers pro Kachel bei breiterem Fluss). Der Sweep über `physics.aquifer_interval=12,6,3,1` ändert die Wassermenge kaum (22.337 → 25.441), ns pro Kachel bleiben bei 71–76.

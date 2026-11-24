@@ -267,3 +267,76 @@ level z=2 tick=20000
    - Bewohner arbeiten große Grabflächen von einer Kante her ab und stehen dabei in Reihen auf derselben Kachelspalte (geteilte Kacheln).
    - Nahrung der Karawane stapelt sich auf wenigen Randkacheln.
    - Gebaute Mauern lassen sich nur über den Generatorvergleich von Naturfels unterscheiden; das Material verrät es nicht.
+
+## Etappe 5 – Weltphysik: Abschlussbericht
+
+`scripts/ci.sh` lief mit Exit 0: fmt, striktes Clippy, 317 Tests (Debug und Release zusammen), Dummy-, Jungle- und Fortress-Läufe sowie neu `scenario_flood`, `scenario_magma` und `scenario_cavein` über je 20.000 Ticks mit `--verify-determinism --verify-save-load --profile-phases --worst-ticks 10 --max-step-allocs 0 --budget-p99-us 10000`. `dig_in` lief mit denselben Optionen ebenfalls mit Exit 0.
+
+1. **Regeln**
+   - **Flüssigkeiten:** Sie liegen in einem eigenen `ChunkedGrid3<u8>`. Bits 0–6 enthalten Einheiten (16 pro Stand, höchstens 112 = Stand 7), Bit 7 markiert Magma.
+     - Jede Kachel schlägt auf Basis des Phasenbeginns vor: zuerst nach unten fallen, sonst zu Nachbarn mit mindestens 2 Einheiten weniger. Die Restverteilung rotiert mit `(tick + x + y) % 4`.
+     - Ziele werden in der Reihenfolge (Priorität, Quelle) bis zur Startkapazität bedient, Reaktionen danach.
+     - Wasser auf Magma ergibt Obsidian (Magma-Kachel wird fest, Wasser verbraucht).
+     - Quellen sind Aquiferflächen (`wet_sandstone`, alle 6 Ticks) und der Flusskopf. Die Mündung ist eine Senke. Einzelne Einheiten verdunsten nach zustandslosem Zufall.
+   - **Topologie:** Die Markierung „unpassierbar“ im Kachel-Flag ist die einzige Kopplung an Bewegung. Sie wird gesetzt bei Wasser ≥ 4, Magma ≥ 1 oder Temperatur ≥ 80 und erst unterhalb der Schwelle wieder gelöscht (Hysterese: Wasser < 3, Temperatur < 70).
+   - **Bewohner:** Wer ab Stand 4 untergetaucht ist, ertrinkt nach 150 Ticks; Bewohner fliehen aus Wasser und Hitze (`Task::Flee`).
+   - **Temperatur:** Die Umgebungstemperatur folgt der Tiefe (`10 + (Tiefe − 1 − z)`). Gespeichert wird nur die Energieabweichung in aktiven Chunks, in gepoolten Doppelpuffern.
+     - Der Fluss ist paarweise antisymmetrisch: `(T_p − T_q) · min(k) / 16` mit Ganzzahlabschneidung.
+     - Freiliegendes Magma speist Energie ein; kleine Abweichungen (≤ 2) kehren zur Umgebung zurück.
+     - Ab 80 Grad nehmen Bewohner Schaden. Ab 100 Grad kocht Wasser (1 Einheit pro Tick), ab 180 Grad entzündet sich Nahrung.
+   - **Stütze:** Elemente sind feste Kacheln und Brückenböden; Anker liegen auf z ≤ 1.
+     - Graben, Bauen und Einstürze stellen Prüfungen in eine `BudgetQueue` (20.000 Einheiten pro Tick, Suchgrenze 4.096, Wiederholung mit doppelter Grenze).
+     - Ungestützte Kacheln fallen spaltenweise und werden zu Steinen am Landepunkt. Bewohner auf dem Fallweg sterben, Gegenstände werden mitgerissen.
+2. **Szenarien:** TPS, p50, p99, schlimmste Ticks, Phasen und Schlafanteil stehen in `BENCHMARKS.md` („Etappe 5“). Kurz: `dig_in` 4.413 TPS, p99 626 µs; `flood` 4.569 TPS, 510 µs; `magma` 2.135 TPS, 862 µs; `cavein` 5.750 TPS, 276 µs. 85 % der Fluid-Chunks schlafen, alle Läufe haben 0 Step-Allokationen.
+   - **Ereignisse:**
+     - `flood`: 3 Ertrunkene.
+     - `magma`: 112 Einheiten Magma zu Obsidian, 207 Einheiten verkocht, 3 Hitzetote, 1 Ertrunkener.
+     - `cavein`: 1 Einsturz mit 16 Kacheln, 1 Toter.
+     - `dig_in`: Sickerwasser im Raum auf z=8, 6 Ertrunkene.
+3. **Nachweise** (Tests in `games/fortress-sim/src/tests.rs` bzw. `crates/sim-core`)
+   - **Schlafen ist verhaltensneutral:** `sleeping_chunks_do_not_change_behavior` vergleicht 3.500 Magma-Ticks mit Fluiden, Wärme, Sieden und Obsidian; die Hashes sind in jedem Tick identisch.
+   - **Erhaltung:** Die Bilanz `fluids_are_conserved_for_ten_thousand_flood_ticks` (Zählung = Summe = Anfang + Quellen − Senken − Verdunstung − Umwandlung − Verkochtes) stimmt in jedem Tick. Die Invariante prüft dies auch im Runner.
+   - **Energiebilanz:** `heat_balances_exactly_and_returns_to_ambient`.
+   - **Stütze:** `targeted_checks_match_full_recomputation` (gezielt = vollständig, 4 Seeds × 600 Runden).
+   - **Einsturz:** `an_undermined_slab_caves_in_and_becomes_stone`.
+   - **Shuffle und Golden:** Shuffle-Test und Golden-Hash pro Szenario (`flood_…`, `magma_…`, `cavein_is_deterministic_shuffle_neutral_and_golden`).
+   - **Save/Load an Übergängen:** `save_load_survives_flowing_water_heat_and_sleep_transitions` und `save_load_survives_a_cave_in` laden bei jedem Schlaf- oder Weckwechsel, bei ausstehenden Stützprüfungen und während des Einsturzes neu.
+   - **Erreichbarkeit:** `a_flooded_room_hides_jobs_until_it_is_pumped_out`: Ein Grabjob in der gefluteten Halle bleibt 300 Ticks offen und wird nach dem Abpumpen erledigt.
+   - **Allokationen:** `phases_do_not_allocate_after_warmup` misst jetzt auch `hazards`, `fluids`, `temperature`, `support` und `collapse` im Magma-Szenario.
+4. **Sweep:** Bei `river_width` 1 → 12 vervierfacht sich die Wassermenge (16.358 → 62.806), die aktiven Kacheln steigen von 3.531 auf 4.574. Die Kosten pro aktiver Kachel wachsen in `fluids` nur von 71 auf 79 ns, die Phase skaliert also mit den aktiven Kacheln und nicht mit dem Wasser.
+5. **Goldens und Version:** Snapshot-Version 3 (Mindestversion 3), Nutzlast `FORTSNP3`, `GENERATOR_VERSION` 2.
+   - **Golden Hashes:**
+     - A* `0x6eccbc989aa504b0`
+     - hierarchisch `0xfa068482edbf7def`
+     - `flood` (2.500 Ticks) `0xc961da72edd69363`
+     - `magma` (2.500) `0x89290525a6c6150a`
+     - `cavein` (1.500) `0xd0de6349237be0be`
+   - **Golden Snapshot:** neu `tests/fixtures/fortress-v3-small.bin` mit `0x7eca89da59972239` bei Tick 300 und `0x4a2b634c2f3e3429` bei Tick 601.
+   - **Alte Snapshots:** v1/v2 werden mit „Weltgenerator geändert: Version 1 → 2“ abgelehnt, weil die Welt ohne Physik-Generator nicht rekonstruierbar ist (dokumentierter Bruch, CHANGELOG).
+   - **Unverändert:** Jungle `0x5317cfd6e2e12024` (Tick 1.000) und `0x19eb3e87d333006d` (Tick 5.000), Dummy `0x20f21cbeee53c309`.
+6. **Gefundene und behobene Fehler**
+   - Bei ganzen Ständen blieb Wasser an Gefällen stehen; daher 16 Einheiten pro Stand.
+   - Die Reaktionsreihenfolge konnte Masse erzeugen. Abhilfe: zwei Durchläufe und Begrenzung auf den aktuellen Quellstand.
+   - Schlafneutralität scheiterte bei Tick 1.892, weil Kachel-Änderungen und Aquiferquellen schlafende Chunks erst im Folgetick weckten. Beide wecken jetzt vor `prepare`.
+   - Bauen auf Wasser schloss Flüssigkeit in Fels ein. Bauen wartet jetzt auf eine trockene Kachel, der Flusskopf füllt nur offene Kacheln.
+   - Hitze tötete alle 25 Bewohner. Heiße Kacheln sind jetzt unpassierbar, eingeschlossene Bewohner machen einen Schritt hinaus.
+   - Wasser verkochte vor dem Magma, sodass kein Obsidian entstand; daher `BOIL_UNITS` = 1.
+   - Die Stützprüfung lief an bereits entschiedenen Nachbarn weiter, und Bauen konnte ungestützte Elemente erzeugen (`note_added`).
+   - Die Stützprüfung allokierte in jedem Tick (`mem::take` auf den Suchpuffer). Gefunden über `--max-step-allocs 0`.
+   - Schwellen-Flattern: Wasserstände an der Schwelle schalteten die Markierung in jedem Tick um, sodass `connectivity` Spitzen bis 11 ms hatte. Die Hysterese halbiert p99.
+7. **Entscheidungen und Abweichungen**
+   - **Druckmodell: keines.** Wasser fällt und gleicht sich seitlich aus, steigt aber nicht in kommunizierenden Röhren oder U-Bögen auf. Druck bräuchte eine begrenzte Suche nach der Pegelhöhe verbundener Körper; das passt nicht in das lokale Transfermodell und wurde zurückgestellt.
+   - Fluide stehen in einem eigenen Gitter statt im `Tile`, damit Fluidänderungen keine Chunk-Versionen der Topologie auslösen. Der Viewer bekommt eigene Fluid-Versionen.
+   - Wärme wird nur als Abweichung gespeichert. Chunks ohne Abweichung geben ihren Pool-Platz frei. Ist der Pool erschöpft (192 Chunks), wird nicht weiter erwärmt; das wird gezählt (`heat_pool_exhausted`, bisher 0).
+   - **Snapshot:** gespeichert werden Fluid- und Energie-Differenzen zur generierten Welt, beide Bilanzen und die Stütz-Warteschlange. Aktive Mengen, Aquifer- und Wärmequellen werden beim Laden neu aufgebaut; laut Neutralitätstest ist das ohne Einfluss. Die Rotation ergibt sich aus dem Tick.
+   - Anker sind z ≤ 1, weil das Magmameer auf z=0 liegt.
+   - Herabfallendes Material wird zu Steinen statt zu fallenden Kacheln. Flüssigkeiten in eingestürzten Kacheln werden verdrängt (`entomb`).
+   - Ein Toter durch Einschließen zählt als `Collapse`.
+   - Pumpen gibt es nur im Test (`pump`, gezählt als Senke); ein spielbares Pumpen fehlt.
+   - **Kosten:** Der Fluss läuft dauernd und hält 21 Chunks wach. Der Standardlauf sinkt damit von 13.906 auf 4.413 TPS (innerhalb des Budgets). Abschalten mit `physics.river = false`.
+8. **Was für Feuer, Gas und Dampf fehlt**
+   - **Gasgitter:** Gas braucht ein drittes Feld mit Dichte pro Kachel und Ausbreitung in alle sechs Richtungen, Auftrieb statt Fallen. Die Infrastruktur (`ActiveChunkSet`, Doppelpuffer, Bilanz) ist dafür vorhanden.
+   - **Dampf:** Verkochtes Wasser verschwindet heute als Bilanzposten `boiled`. Mit Gas würde es Dampf, der aufsteigt, abkühlt und kondensiert; die Bilanz wäre dann über zwei Felder geschlossen.
+   - **Feuer:** Brennstoff und Brennzustand als Material- bzw. Kacheleigenschaft (heute entzündet sich nur Nahrung und wird zerstört), dazu Sauerstoff aus dem Gasfeld, Wärmeabgabe über `add_energy` und Rauch als Gas. Die Ausbreitung lässt sich über die vorhandene zustandslose Zufallsquelle pro Kachel regeln.
+   - **Holz und Bauteile:** Brennbare Bauteile und Brücken, die bei Brand einstürzen (Kopplung an `note_removed`).
+   - **Druck:** Für Gas und Wasser gleichermaßen fehlt ein Druckmodell (siehe 7).
