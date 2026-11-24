@@ -43,6 +43,8 @@ pub enum JobOverlay {
     Dig(DigMode),
     Build(BuildKind),
     Haul,
+    Fell,
+    Farm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +225,8 @@ impl View<'_> {
                     JobKind::Dig(mode) => JobOverlay::Dig(mode),
                     JobKind::Build(kind) => JobOverlay::Build(kind),
                     JobKind::Haul(_) => JobOverlay::Haul,
+                    JobKind::Fell(_) => JobOverlay::Fell,
+                    JobKind::Sow | JobKind::Harvest(_) => JobOverlay::Farm,
                 },
                 claimed_by,
             });

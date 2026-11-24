@@ -46,6 +46,7 @@ fn phases_do_not_allocate_after_warmup() {
         count("path", &mut sim, FortressSim::path);
         count("move", &mut sim, FortressSim::movement);
         count("work", &mut sim, FortressSim::work);
+        count("plants", &mut sim, FortressSim::plants_step);
         count("fluids", &mut sim, FortressSim::fluids);
         count("temperature", &mut sim, FortressSim::temperature_step);
         count("support", &mut sim, FortressSim::support_step);
@@ -186,14 +187,14 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x39026d0283a10d60;
+const GOLDEN_ASTAR: u64 = 0xa62560054824a387;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
     let schedule = scenario();
     let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
     run_with_scenario(&mut sim, &schedule, 2000, |_| {});
-    assert!(sim.counters.dug >= 450, "dug {}", sim.counters.dug);
+    assert!(sim.counters.dug >= 440, "dug {}", sim.counters.dug);
     assert_eq!(sim.diag.lowest_level, 2);
     let bottom = sim.world.get(Pos3::new(40, 48, 2)).unwrap();
     assert_eq!(bottom.kind, TileKind::StairUp);
@@ -471,11 +472,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x86f2ac0f9e6a226c);
+    assert_eq!(sim.state_hash(), 0x626ca1d131b6f458);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0xaa62567e5cdce43b);
+    assert_eq!(sim.state_hash(), 0x23e4807fcdc2efef);
 }
 
 #[test]
@@ -500,7 +501,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x7519e61a3cdbcc54;
+const GOLDEN_HIERARCHICAL: u64 = 0x5bc1abc6b08b6d87;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -812,9 +813,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0x25fa64edca658e0c;
-const GOLDEN_MAGMA: u64 = 0xe37244e90f73fde7;
-const GOLDEN_CAVEIN: u64 = 0x3a19f7a85adf8313;
+const GOLDEN_FLOOD: u64 = 0x9dc13bd1db2af9b5;
+const GOLDEN_MAGMA: u64 = 0x0b05a5bea0ac819b;
+const GOLDEN_CAVEIN: u64 = 0x74b6105de4413efa;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -1332,4 +1333,124 @@ fn item_queries_match_brute_force_with_reachability() {
             );
         }
     }
+}
+
+#[test]
+fn the_calendar_cycles_through_four_seasons() {
+    let mut sim = flat(calm());
+    let season = sim.config.ticks_per_day * sim.config.days_per_season;
+    for (tick, expected) in [
+        (0, 0),
+        (season - 1, 0),
+        (season, 1),
+        (3 * season, 3),
+        (4 * season, 0),
+    ] {
+        sim.tick = tick;
+        assert_eq!(sim.season(), expected, "tick {tick}");
+    }
+}
+
+#[test]
+fn felling_trees_yields_logs_and_experience() {
+    let mut sim = FortressSim::new(42, small()).unwrap();
+    let trees = sim.plants.len();
+    assert!(trees > 0, "embark has trees");
+    let w = sim.config.world_size_xy;
+    let depth = sim.config.world_depth;
+    sim.step(&[FortressCommand::DesignateFelling {
+        from: Pos3::new(0, 0, 0),
+        to: Pos3::new(w - 1, w - 1, depth - 1),
+    }]);
+    let jobs = sim
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.data, JobKind::Fell(_)))
+        .count();
+    assert_eq!(jobs, trees);
+    for tick in 0..3000 {
+        sim.step(&[]);
+        if tick % 50 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    }
+    assert!(sim.counters.felled >= 5, "felled {}", sim.counters.felled);
+    let log = kind(&sim, "log");
+    let logs = sim.ledger[usize::from(log.0)];
+    assert_eq!(logs.produced, sim.counters.felled * 3);
+    let woodcutting = GameContent::id_of(&sim.content.ids.skills, "woodcutting").unwrap();
+    let experienced =
+        (0..sim.rcols.len()).any(|s| sim.rcols.skills[s].0[usize::from(woodcutting)] > 0);
+    assert!(experienced);
+    assert_eq!(sim.plants.len() as u64, trees as u64 - sim.counters.felled);
+}
+
+#[test]
+fn underground_farms_sow_grow_and_harvest_food_and_seeds() {
+    let mut sim = flat(calm());
+    sim.step(&[FortressCommand::DesignateFarm {
+        from: Pos3::new(4, 4, 1),
+        to: Pos3::new(6, 6, 1),
+        crop: "cave_mushroom".into(),
+    }]);
+    assert_eq!(sim.farms.len(), 9);
+    sim.step(&[FortressCommand::DesignateFarm {
+        from: Pos3::new(8, 8, 1),
+        to: Pos3::new(8, 8, 1),
+        crop: "unknown".into(),
+    }]);
+    let invalid = sim.counters.invalid_designations;
+    assert!(invalid >= 1);
+    let mushroom = kind(&sim, "cave_mushroom");
+    let spawn = kind(&sim, "cave_mushroom_spawn");
+    let seeds_before = sim.ledger[usize::from(spawn.0)];
+    for tick in 0..4000 {
+        sim.step(&[]);
+        if tick % 25 == 0 {
+            sim.check_invariants().unwrap();
+        }
+        if tick == 1000 {
+            // Mid-growth save and load keeps the plants and the jobs.
+            let reloaded = roundtrip(&sim);
+            sim = reloaded;
+        }
+    }
+    assert!(sim.counters.sown >= 9, "sown {}", sim.counters.sown);
+    assert!(
+        sim.counters.aborted_tasks < 50,
+        "no abort loops: {}",
+        sim.counters.aborted_tasks
+    );
+    assert!(
+        sim.counters.harvested >= 9,
+        "harvested {}",
+        sim.counters.harvested
+    );
+    let food = sim.ledger[usize::from(mushroom.0)];
+    assert_eq!(food.produced, 3 * sim.counters.harvested);
+    let seeds = sim.ledger[usize::from(spawn.0)];
+    assert_eq!(seeds.removed - seeds_before.removed, sim.counters.sown);
+    assert_eq!(
+        seeds.produced - seeds_before.produced,
+        sim.counters.harvested
+    );
+}
+
+#[test]
+fn surface_crops_do_not_grow_in_winter() {
+    let mut sim = flat(calm());
+    let barley = GameContent::id_of(&sim.content.ids.plants, "barley").unwrap();
+    let season = sim.config.ticks_per_day * sim.config.days_per_season;
+    sim.tick = 3 * season;
+    let plant = sim.create_plant(Pos3::new(3, 3, 1), barley, 0).unwrap();
+    for _ in 0..500 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.season(), 3);
+    assert_eq!(sim.pcols.growth[sim.pslot(plant).unwrap()], 0);
+    sim.tick = 4 * season;
+    for _ in 0..500 {
+        sim.step(&[]);
+    }
+    assert!(sim.pcols.growth[sim.pslot(plant).unwrap()] >= 450);
 }

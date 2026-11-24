@@ -8,6 +8,7 @@ mod config;
 pub mod content;
 mod diagnostics;
 mod fluids;
+mod plants;
 mod render;
 mod snapshot;
 mod temperature;
@@ -15,7 +16,7 @@ mod types;
 pub mod view;
 mod world;
 
-pub use config::{FortressConfig, Pathfinding, PhysicsConfig};
+pub use config::{FortressConfig, Pathfinding, PhysicsConfig, StartItems};
 pub use content::GameContent;
 pub use sim_core::space::{Pos3, Tile, TileKind};
 pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
@@ -39,8 +40,8 @@ use sim_core::{
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
 use types::{
-    Death, Event, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, ResKey, Resident,
-    ResidentId, Route, RouteStatus, Task, Vitals,
+    Death, Event, FarmPlot, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, Plant, PlantId,
+    ResKey, Resident, ResidentId, Route, RouteStatus, Skills, Task, Vitals,
 };
 
 const DIG_PRIORITY: i32 = 5;
@@ -69,6 +70,16 @@ sim_core::entity_columns! {
         carried: Option<ItemId>,
         route: Route,
         work: u32,
+        skills: Skills,
+    }
+}
+
+sim_core::entity_columns! {
+    struct PlantColumns, row PlantRow {
+        pos: Pos3,
+        kind: u16,
+        growth: u32,
+        job: Option<JobId>,
     }
 }
 
@@ -98,6 +109,9 @@ pub(crate) struct Counters {
     pub completed_jobs: u64,
     pub collapses: u64,
     pub collapsed_tiles: u64,
+    pub felled: u64,
+    pub harvested: u64,
+    pub sown: u64,
 }
 
 sim_core::state_hash_struct!(Counters {
@@ -111,7 +125,10 @@ sim_core::state_hash_struct!(Counters {
     aborted_tasks,
     completed_jobs,
     collapses,
-    collapsed_tiles
+    collapsed_tiles,
+    felled,
+    harvested,
+    sown
 });
 
 /// Diagnostics excluded from hashes and snapshots.
@@ -205,6 +222,9 @@ pub struct FortressSim {
     /// Derived container membership by item index; rebuilt on load.
     contents: Membership,
     ledger: Vec<Ledger>,
+    plants: EntityTable<Plant>,
+    pcols: PlantColumns,
+    farms: Vec<FarmPlot>,
     fluid: ChunkedGrid3<u8>,
     fluid_active: ActiveChunkSet,
     balance: fluids::FluidBalance,
@@ -231,6 +251,7 @@ pub struct FortressSim {
 struct Scratch {
     chunks: Vec<ChunkId>,
     members: Vec<u32>,
+    plant_ids: Vec<PlantId>,
     fluid_marks: Vec<bool>,
     fluid_changed: Vec<ChunkId>,
     fluid_chunks: Vec<ChunkId>,
@@ -275,6 +296,7 @@ impl Scratch {
         Self {
             chunks: Vec::with_capacity(4096),
             members: Vec::with_capacity(256),
+            plant_ids: Vec::with_capacity(config.max_plants as usize),
             fluid_marks: vec![false; chunk_count * 2],
             fluid_changed: Vec::with_capacity(chunk_count * 2),
             fluid_chunks: Vec::with_capacity(chunk_count * 2),
@@ -445,6 +467,9 @@ impl FortressSim {
         Ok(Self {
             contents: Membership::new(items as usize),
             ledger: vec![Ledger::default(); kinds],
+            plants: EntityTable::with_capacity(config.max_plants),
+            pcols: PlantColumns::with_capacity(config.max_plants as usize),
+            farms: Vec::with_capacity(config.max_farm_plots as usize),
             seed,
             tick: 0,
             connectivity,
@@ -674,6 +699,7 @@ impl FortressSim {
             None,
             Route::NONE,
             0,
+            Skills::default(),
         );
         Some(id)
     }
@@ -756,6 +782,9 @@ impl FortressSim {
     fn abort_task(&mut self, id: ResidentId) {
         let Some(slot) = self.rslot(id) else { return };
         let task = self.rcols.task[slot];
+        if let Task::Sow { stage: 1, plot, .. } = task {
+            self.return_seed(id, self.rcols.position[slot], plot);
+        }
         if let Some(job) = task.job() {
             self.jobs.release(job);
         }
@@ -974,6 +1003,16 @@ impl FortressSim {
                     Some(site)
                 }
             }
+            Task::Gather { plant, .. } => self.pslot(plant).map(|s| self.pcols.pos[s]),
+            Task::Sow {
+                seed, plot, stage, ..
+            } => {
+                if stage == 0 {
+                    self.item_ground(seed)
+                } else {
+                    Some(plot)
+                }
+            }
         }
     }
 
@@ -1023,7 +1062,9 @@ impl FortressSim {
                 }
                 build_sites(&self.connectivity, job.pos)
             }
-            JobKind::Haul(_) => return None,
+            JobKind::Haul(_) | JobKind::Fell(_) | JobKind::Sow | JobKind::Harvest(_) => {
+                return None;
+            }
         };
         sites
             .into_iter()
@@ -1063,11 +1104,11 @@ impl FortressSim {
 
     fn shuffle_slots(&mut self) {
         let scratch = &mut self.scratch;
-        for table in 0..2u64 {
-            let len = if table == 0 {
-                self.residents.len()
-            } else {
-                self.items.len()
+        for table in 0..3u64 {
+            let len = match table {
+                0 => self.residents.len(),
+                1 => self.items.len(),
+                _ => self.plants.len(),
             };
             scratch.order.clear();
             scratch.order.extend(0..len);
@@ -1078,12 +1119,19 @@ impl FortressSim {
                     .swap(end, below(random, end as u64 + 1) as usize);
             }
             if scratch.permutation.prepare(&scratch.order) {
-                if table == 0 {
-                    self.residents.apply_permutation(&scratch.permutation);
-                    self.rcols.apply_permutation(&scratch.permutation);
-                } else {
-                    self.items.apply_permutation(&scratch.permutation);
-                    self.icols.apply_permutation(&scratch.permutation);
+                match table {
+                    0 => {
+                        self.residents.apply_permutation(&scratch.permutation);
+                        self.rcols.apply_permutation(&scratch.permutation);
+                    }
+                    1 => {
+                        self.items.apply_permutation(&scratch.permutation);
+                        self.icols.apply_permutation(&scratch.permutation);
+                    }
+                    _ => {
+                        self.plants.apply_permutation(&scratch.permutation);
+                        self.pcols.apply_permutation(&scratch.permutation);
+                    }
                 }
             }
         }
@@ -1189,6 +1237,12 @@ impl FortressSim {
                     self.jobs
                         .retain(|job| !(inside(job.pos) && !matches!(job.data, JobKind::Haul(_))));
                     self.stockpiles.retain(|&p| !inside(p));
+                    self.farms.retain(|plot| !inside(plot.pos));
+                    for slot in 0..self.pcols.len() {
+                        if self.pcols.job[slot].is_some_and(|job| self.jobs.get(job).is_none()) {
+                            self.pcols.job[slot] = None;
+                        }
+                    }
                     self.scratch.job_positions.retain(|&p| !inside(p));
                 }
                 FortressCommand::SpawnResidents { count } => {
@@ -1199,6 +1253,20 @@ impl FortressSim {
                             ordinal as u32,
                             EntityCommand::Spawn(Op::SpawnResident),
                         );
+                    }
+                }
+                FortressCommand::DesignateFarm { from, to, ref crop } => {
+                    match GameContent::id_of(&self.content.ids.plants, crop) {
+                        Some(kind) => {
+                            let rejected = self.designate_farm(from, to, kind);
+                            self.counters.invalid_designations += rejected;
+                        }
+                        None => self.counters.invalid_designations += 1,
+                    }
+                }
+                FortressCommand::DesignateFelling { from, to } => {
+                    if self.designate_felling(from, to) == 0 {
+                        self.counters.invalid_designations += 1;
                     }
                 }
             }
@@ -1343,6 +1411,9 @@ impl FortressSim {
                         })
                         && (free_slots > 0 || targets.binary_search(&job.pos).is_ok())
                 }
+                JobKind::Fell(_) | JobKind::Harvest(_) | JobKind::Sow => {
+                    connectivity.is_standable(job.pos)
+                }
             });
         }
         let mut assigner = std::mem::take(&mut self.scratch.assigner);
@@ -1355,7 +1426,9 @@ impl FortressSim {
             |_, at, job| match job.data {
                 JobKind::Dig(_) => self.best_site(at, job.id).is_some(),
                 JobKind::Build(_) => stones && self.best_site(at, job.id).is_some(),
-                JobKind::Haul(_) => self.connectivity.reachable(at, job.pos),
+                JobKind::Haul(_) | JobKind::Fell(_) | JobKind::Harvest(_) | JobKind::Sow => {
+                    self.connectivity.reachable(at, job.pos)
+                }
             },
             |job, distance| {
                 let clearing = matches!(job.data, JobKind::Haul(_))
@@ -1376,7 +1449,22 @@ impl FortressSim {
             };
             let at = self.rcols.position[slot];
             let priority = job.priority;
+            let pos = job.pos;
             let task = match job.data {
+                JobKind::Fell(plant) | JobKind::Harvest(plant) => {
+                    Some(Task::Gather { job: job_id, plant })
+                }
+                JobKind::Sow => self.seed_input(pos).and_then(|input| {
+                    let (distance, seed) = self.nearest_item(at, &input, None, &[])?;
+                    self.reservations
+                        .claim(ResKey::Item(seed), worker, priority, distance);
+                    Some(Task::Sow {
+                        job: job_id,
+                        seed,
+                        plot: pos,
+                        stage: 0,
+                    })
+                }),
                 JobKind::Dig(_) => self
                     .best_site(at, job_id)
                     .map(|site| Task::Dig { job: job_id, site }),
@@ -1635,6 +1723,16 @@ impl FortressSim {
             match task {
                 Task::Idle | Task::Sleep => {}
                 Task::Flee { .. } => self.release_and_idle(slot, id),
+                Task::Gather { job, plant } => {
+                    if self.work_gather(slot, id, job, plant) {
+                        self.release_and_idle(slot, id);
+                    }
+                }
+                Task::Sow { .. } => {
+                    if self.work_sow(slot, id, task) {
+                        self.release_and_idle(slot, id);
+                    }
+                }
                 Task::Eat { item } => {
                     if self.item_ground(item) != Some(at) {
                         self.scratch.abort.push(id);
@@ -1904,8 +2002,14 @@ impl FortressSim {
         }
         // Remove finished jobs and designations whose target can no longer be worked.
         let world = &self.world;
+        let plants = &self.plants;
+        let farms = &self.farms;
         self.jobs.retain(|job| match (job.state, job.data) {
             (JobState::Done, _) => false,
+            (JobState::Open, JobKind::Fell(p) | JobKind::Harvest(p)) => plants.is_alive(p),
+            (JobState::Open, JobKind::Sow) => {
+                farms.binary_search_by_key(&job.pos, |f| f.pos).is_ok()
+            }
             (JobState::Open, JobKind::Dig(_)) => world
                 .get(job.pos)
                 .is_some_and(|t| t.kind == TileKind::Solid),
@@ -2049,6 +2153,10 @@ impl FortressSim {
                 Op::DespawnItem(item) => self.despawn_item(item),
                 Op::Merge { from, into } => self.merge_stacks(from, into),
                 Op::Split { item, amount } => self.split_stack(item, amount),
+                Op::SpawnPlant { at, kind, growth } => {
+                    self.create_plant(at, kind, growth);
+                }
+                Op::DespawnPlant(plant) => self.remove_plant(plant),
                 Op::DespawnResident(id) => {
                     self.abort_task(id);
                     self.reservations.release_holder(id);
@@ -2136,7 +2244,28 @@ impl Simulation for FortressSim {
                 );
             }
         }
-        sim.events.push(sim.config.caravan_interval, Event::Caravan);
+        for i in 0..sim.config.initial_items.len() {
+            let start = sim.config.initial_items[i].clone();
+            let unknown = |what: &str, id: &str| {
+                SimError::InvalidConfig(format!("initial_items: unbekannte {what} „{id}“"))
+            };
+            let kind = GameContent::id_of(&sim.content.ids.items, &start.item)
+                .ok_or_else(|| unknown("Gegenstandsart", &start.item))?;
+            let material = match &start.material {
+                Some(m) => GameContent::id_of(&sim.content.ids.materials, m)
+                    .ok_or_else(|| unknown("Material", m))?,
+                None => sim.content.items[usize::from(kind)]
+                    .material
+                    .ok_or_else(|| unknown("Material für", &start.item))?,
+            };
+            if let Some(&at) = spots.get(i % spots.len().max(1)) {
+                sim.spawn_item(at, ItemKind(kind), material, start.amount, 0);
+            }
+        }
+        sim.plant_initial_trees();
+        if sim.config.caravan {
+            sim.events.push(sim.config.caravan_interval, Event::Caravan);
+        }
         sim.balance.initial = sim.count_fluids();
         sim.balance.total = sim.balance.initial;
         sim.init_physics();
@@ -2167,6 +2296,7 @@ impl Simulation for FortressSim {
         phase(probe, "path", || self.path());
         phase(probe, "move", || self.movement());
         phase(probe, "work", || self.work());
+        phase(probe, "plants", || self.plants_step());
         phase(probe, "fluids", || self.fluids());
         phase(probe, "temperature", || self.temperature_step());
         phase(probe, "support", || self.support_step());

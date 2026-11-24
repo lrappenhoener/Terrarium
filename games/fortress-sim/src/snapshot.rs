@@ -34,6 +34,12 @@ struct ItemRecord {
 }
 
 #[derive(Serialize, Deserialize)]
+struct PlantRecord {
+    id: crate::types::PlantId,
+    row: crate::PlantRow,
+}
+
+#[derive(Serialize, Deserialize)]
 struct State {
     config: String,
     seed: u64,
@@ -57,6 +63,9 @@ struct State {
     heat_balance: crate::temperature::HeatBalance,
     support: Vec<(Pos3, u8)>,
     ledger: Vec<crate::types::Ledger>,
+    plant_ids: AllocatorState,
+    plants: Vec<PlantRecord>,
+    farms: Vec<crate::types::FarmPlot>,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -161,6 +170,16 @@ impl FortressSim {
             heat_balance: self.heat_balance,
             support: self.support.pending(),
             ledger: self.ledger.clone(),
+            plant_ids: self.plants.snapshot_state(),
+            plants: self
+                .plants
+                .iter_by_id()
+                .filter_map(|id| {
+                    let row = self.plants.slot(id).and_then(|slot| self.pcols.row(slot))?;
+                    Some(PlantRecord { id, row })
+                })
+                .collect(),
+            farms: self.farms.clone(),
         };
         let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
         *out = postcard::to_allocvec(&(
@@ -293,6 +312,24 @@ impl FortressSim {
             return Err(fail("item ledger does not match the content"));
         }
         sim.ledger = state.ledger;
+        sim.plants = EntityTable::restore_state(
+            sim.config.max_plants,
+            state.plant_ids,
+            state.plants.iter().map(|r| r.id),
+        )
+        .ok_or_else(|| fail("invalid plant IDs"))?;
+        for record in state.plants {
+            sim.pcols.push_row(record.row);
+        }
+        if state
+            .farms
+            .windows(2)
+            .any(|pair| pair[0].pos >= pair[1].pos)
+            || state.farms.len() > sim.config.max_farm_plots as usize
+        {
+            return Err(fail("farm plots must ascend by position"));
+        }
+        sim.farms = state.farms;
         sim.rebuild_item_index();
         let (w, d) = (sim.config.world_size_xy, sim.config.world_depth);
         sim.jobs = JobBoard::restore(
@@ -415,6 +452,20 @@ impl FortressSim {
         }
         for p in &self.stockpiles {
             writeln!(out, "stockpile:{},{},{}\t1", p.x, p.y, p.z).map_err(fail)?;
+        }
+        for id in self.plants.iter_by_id() {
+            let Some(slot) = self.pslot(id) else { continue };
+            write!(out, "plant:{}:{}\t", id.index, id.generation).map_err(fail)?;
+            self.pcols.dump_row(slot as u32, out);
+            writeln!(out).map_err(fail)?;
+        }
+        for plot in &self.farms {
+            writeln!(
+                out,
+                "farm:{},{},{}\tcrop={} plant={:?} job={:?}",
+                plot.pos.x, plot.pos.y, plot.pos.z, plot.crop, plot.plant, plot.job
+            )
+            .map_err(fail)?;
         }
         for (kind, entry) in self.ledger.iter().enumerate() {
             writeln!(

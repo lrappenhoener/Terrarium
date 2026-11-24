@@ -15,6 +15,35 @@ pub enum Item {}
 
 pub type ResidentId = TypedId<Resident>;
 pub type ItemId = TypedId<Item>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Plant {}
+pub type PlantId = TypedId<Plant>;
+
+/// Experience per skill, indexed like the content's skills.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skills(pub [u32; crate::content::MAX_SKILLS]);
+
+impl StateHash for Skills {
+    fn state_hash(&self, hash: &mut StateHasher) {
+        self.0.state_hash(hash);
+    }
+}
+
+/// A designated farm tile with its crop, current plant and pending job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FarmPlot {
+    pub pos: Pos3,
+    pub crop: u16,
+    pub plant: Option<PlantId>,
+    pub job: Option<JobId>,
+}
+
+sim_core::state_hash_struct!(FarmPlot {
+    pos,
+    crop,
+    plant,
+    job
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DigMode {
@@ -87,6 +116,10 @@ pub enum JobKind {
     Dig(DigMode),
     Build(BuildKind),
     Haul(ItemId),
+    Fell(PlantId),
+    /// Sow the farm plot at the job position.
+    Sow,
+    Harvest(PlantId),
 }
 
 impl StateHash for JobKind {
@@ -103,6 +136,15 @@ impl StateHash for JobKind {
             Self::Haul(item) => {
                 hash.write_u8(2);
                 item.state_hash(hash);
+            }
+            Self::Fell(plant) => {
+                hash.write_u8(3);
+                plant.state_hash(hash);
+            }
+            Self::Sow => hash.write_u8(4),
+            Self::Harvest(plant) => {
+                hash.write_u8(5);
+                plant.state_hash(hash);
             }
         }
     }
@@ -176,12 +218,28 @@ pub enum Task {
     Flee {
         target: Pos3,
     },
+    /// Fell a tree or harvest a crop standing on the plant's tile.
+    Gather {
+        job: JobId,
+        plant: PlantId,
+    },
+    /// Stage 0 fetches one seed unit from `seed`, stage 1 plants it on `plot`.
+    Sow {
+        job: JobId,
+        seed: ItemId,
+        plot: Pos3,
+        stage: u8,
+    },
 }
 
 impl Task {
     pub(crate) fn job(self) -> Option<JobId> {
         match self {
-            Self::Dig { job, .. } | Self::Haul { job, .. } | Self::Build { job, .. } => Some(job),
+            Self::Dig { job, .. }
+            | Self::Haul { job, .. }
+            | Self::Build { job, .. }
+            | Self::Gather { job, .. }
+            | Self::Sow { job, .. } => Some(job),
             _ => None,
         }
     }
@@ -193,6 +251,7 @@ impl Task {
                 key == ResKey::Item(item) || key == ResKey::Slot(slot)
             }
             (Self::Build { item, .. }, ResKey::Item(other)) => item == other,
+            (Self::Sow { seed, stage: 0, .. }, ResKey::Item(other)) => seed == other,
             _ => false,
         }
     }
@@ -206,6 +265,8 @@ impl Task {
             Self::Haul { .. } => "haul",
             Self::Build { .. } => "build",
             Self::Flee { .. } => "flee",
+            Self::Gather { .. } => "gather",
+            Self::Sow { .. } => "sow",
         }
     }
 }
@@ -245,6 +306,19 @@ impl StateHash for Task {
             Self::Flee { target } => {
                 hash.write_u8(6);
                 target.state_hash(hash);
+            }
+            Self::Gather { job, plant } => {
+                hash.write_u8(7);
+                (job, plant).state_hash(hash);
+            }
+            Self::Sow {
+                job,
+                seed,
+                plot,
+                stage,
+            } => {
+                hash.write_u8(8);
+                (job, seed, plot, stage).state_hash(hash);
             }
         }
     }
@@ -327,13 +401,48 @@ pub enum Op {
         amount: u32,
     },
     DespawnResident(ResidentId),
+    SpawnPlant {
+        at: Pos3,
+        kind: u16,
+        growth: u32,
+    },
+    DespawnPlant(PlantId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Player commands. Content is named by string ID; a command resolves its IDs once
+/// when it is applied, the simulation keeps only indices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FortressCommand {
-    DesignateDig { from: Pos3, to: Pos3, mode: DigMode },
-    DesignateStockpile { from: Pos3, to: Pos3 },
-    Build { pos: Pos3, kind: BuildKind },
-    CancelDesignations { from: Pos3, to: Pos3 },
-    SpawnResidents { count: u32 },
+    DesignateDig {
+        from: Pos3,
+        to: Pos3,
+        mode: DigMode,
+    },
+    DesignateStockpile {
+        from: Pos3,
+        to: Pos3,
+    },
+    Build {
+        pos: Pos3,
+        kind: BuildKind,
+    },
+    CancelDesignations {
+        from: Pos3,
+        to: Pos3,
+    },
+    SpawnResidents {
+        count: u32,
+    },
+    /// Farm plots for `crop` on standable floors; underground crops below the
+    /// surface, others on it.
+    DesignateFarm {
+        from: Pos3,
+        to: Pos3,
+        crop: String,
+    },
+    /// Fell all trees in the box.
+    DesignateFelling {
+        from: Pos3,
+        to: Pos3,
+    },
 }

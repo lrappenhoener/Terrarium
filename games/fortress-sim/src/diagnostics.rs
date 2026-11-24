@@ -154,7 +154,18 @@ impl FortressSim {
         }
     }
 
-    pub(crate) fn hashes(&self) -> [(&'static str, u64); 7] {
+    pub(crate) fn hashes(&self) -> [(&'static str, u64); 8] {
+        let mut plants = StateHasher::new();
+        self.plants.hash_state(&mut plants);
+        plants.write_usize(self.plants.len());
+        for id in self.plants.iter_by_id() {
+            if let Some(slot) = self.plants.slot(id) {
+                id.state_hash(&mut plants);
+                self.pcols.hash_row(slot, &mut plants);
+            }
+        }
+        self.farms.state_hash(&mut plants);
+
         let mut heat = StateHasher::new();
         let cells = self.energy_cells();
         heat.write_usize(cells.len());
@@ -245,6 +256,7 @@ impl FortressSim {
             ("meta", meta.finish()),
             ("fluids", fluids.finish()),
             ("heat", heat.finish()),
+            ("plants", plants.finish()),
         ]
     }
 
@@ -448,6 +460,37 @@ impl FortressSim {
         if self.stockpiles.windows(2).any(|pair| pair[0] >= pair[1]) {
             return fail("stockpile tiles are not sorted and unique");
         }
+        for id in self.plants.iter_by_id() {
+            let Some(slot) = self.pslot(id) else {
+                return fail("live plant without slot");
+            };
+            let kind = usize::from(self.pcols.kind[slot]);
+            let Some(def) = self.content.plants.get(kind) else {
+                return fail("plant of unknown kind");
+            };
+            if self.pcols.growth[slot] > def.growth_ticks
+                || self.world.get(self.pcols.pos[slot]).is_none()
+            {
+                return fail("plant growth or position out of range");
+            }
+            if let Some(job) = self.pcols.job[slot]
+                && self.jobs.get(job).is_none()
+            {
+                return fail("plant references a missing job");
+            }
+        }
+        if self.farms.windows(2).any(|pair| pair[0].pos >= pair[1].pos) {
+            return fail("farm plots are not sorted and unique");
+        }
+        for plot in &self.farms {
+            if let Some(plant) = plot.plant
+                && self
+                    .pslot(plant)
+                    .is_some_and(|s| self.pcols.pos[s] != plot.pos)
+            {
+                return fail("farm plot plant stands elsewhere");
+            }
+        }
         let counted = self.count_fluids();
         for (kind, &count) in counted.iter().enumerate() {
             if count != self.balance.total[kind]
@@ -487,6 +530,15 @@ impl FortressSim {
                 (_, JobKind::Haul(item)) => self
                     .islot(item)
                     .is_some_and(|s| self.icols.haul[s] == Some(job.id)),
+                (_, JobKind::Fell(plant) | JobKind::Harvest(plant)) => {
+                    self.pslot(plant).is_some_and(|s| {
+                        self.pcols.job[s] == Some(job.id) && self.pcols.pos[s] == job.pos
+                    })
+                }
+                (_, JobKind::Sow) => self
+                    .farms
+                    .binary_search_by_key(&job.pos, |plot| plot.pos)
+                    .is_ok(),
             };
             if !valid {
                 return fail("job references an invalid location or item");

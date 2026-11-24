@@ -214,7 +214,7 @@ impl Session {
                 break;
             }
             if entry.tick == tick {
-                self.commands.extend(entry.commands.iter().copied());
+                self.commands.extend(entry.commands.iter().cloned());
             }
             self.next_scheduled += 1;
         }

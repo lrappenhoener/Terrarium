@@ -76,6 +76,16 @@ impl Default for PhysicsConfig {
     }
 }
 
+/// Items placed near the embark at the start, by content ID.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StartItems {
+    pub item: String,
+    pub amount: u32,
+    #[serde(default)]
+    pub material: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Pathfinding {
@@ -129,6 +139,20 @@ pub struct FortressConfig {
     pub pathfinding: Pathfinding,
     pub physics: PhysicsConfig,
     pub haul_scan_interval: u64,
+    /// Calendar: a season lasts `days_per_season` days of `ticks_per_day` ticks.
+    pub ticks_per_day: u64,
+    pub days_per_season: u64,
+    /// Grown trees per thousand surface tiles outside the mountain.
+    pub tree_density: u32,
+    pub max_plants: u32,
+    pub max_farm_plots: u32,
+    /// Plants grow every this many ticks, staggered by plant ID.
+    pub plant_interval: u64,
+    /// Farm plots request sowing and harvesting every this many ticks, staggered.
+    pub farm_interval: u64,
+    /// Whether caravans bring food; farms make them unnecessary.
+    pub caravan: bool,
+    pub initial_items: Vec<StartItems>,
     /// Bounds of each item search in the category index: chunk cells and items.
     pub item_search_cells: u32,
     pub item_search_candidates: u32,
@@ -177,6 +201,26 @@ impl Default for FortressConfig {
             pathfinding: Pathfinding::Astar,
             physics: PhysicsConfig::default(),
             haul_scan_interval: 64,
+            ticks_per_day: 1_200,
+            days_per_season: 10,
+            tree_density: 20,
+            max_plants: 20_000,
+            max_farm_plots: 4_096,
+            plant_interval: 50,
+            farm_interval: 32,
+            caravan: true,
+            initial_items: vec![
+                StartItems {
+                    item: "cave_mushroom_spawn".into(),
+                    amount: 10,
+                    material: None,
+                },
+                StartItems {
+                    item: "barley_seed".into(),
+                    amount: 10,
+                    material: None,
+                },
+            ],
             item_search_cells: 512,
             item_search_candidates: 4_096,
             debug_shuffle_slots: false,
@@ -227,6 +271,15 @@ impl FortressConfig {
             || self.path_expansion_limit == 0
             || self.haul_scan_interval == 0
             || self.item_search_cells == 0
+            || self.ticks_per_day == 0
+            || self.days_per_season == 0
+            || self.tree_density > 1000
+            || !(1..=1_000_000).contains(&self.max_plants)
+            || self.max_farm_plots > 1_000_000
+            || self.plant_interval == 0
+            || self.farm_interval == 0
+            || self.initial_items.len() > 64
+            || self.initial_items.iter().any(|s| s.amount > 100_000)
             || self.item_search_candidates == 0
             || !(1..=7).contains(&self.physics.water_impassable_at)
             || !(1..=7).contains(&self.physics.magma_impassable_at)
@@ -284,6 +337,26 @@ impl FortressConfig {
             self.item_search_candidates,
         ] {
             hash.write_u32(value);
+        }
+        for value in [self.tree_density, self.max_plants, self.max_farm_plots] {
+            hash.write_u32(value);
+        }
+        for value in [
+            self.ticks_per_day,
+            self.days_per_season,
+            self.plant_interval,
+            self.farm_interval,
+        ] {
+            hash.write_u64(value);
+        }
+        hash.write_bool(self.caravan);
+        hash.write_usize(self.initial_items.len());
+        for start in &self.initial_items {
+            hash.write_bytes(start.item.as_bytes());
+            hash.write_u8(0);
+            hash.write_u32(start.amount);
+            hash.write_bytes(start.material.as_deref().unwrap_or("").as_bytes());
+            hash.write_u8(0);
         }
         for value in [
             self.hunger_rate,
