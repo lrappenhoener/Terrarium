@@ -1,0 +1,126 @@
+# Item kinds. `stack` is the largest stack, `capacity` makes a container and
+# `bulk` lets a resident carry the container with several items while hauling.
+
+[[item]]
+id = "stone"
+category = "stone"
+value = 1
+
+[[item]]
+id = "ore"
+category = "ore"
+value = 2
+
+[[item]]
+id = "bar"
+category = "bar"
+value = 10
+
+[[item]]
+id = "block"
+category = "block"
+value = 3
+
+[[item]]
+id = "log"
+category = "log"
+value = 2
+
+[[item]]
+id = "charcoal"
+category = "fuel"
+stack = 10
+value = 2
+
+[[item]]
+id = "pick"
+category = "tool"
+value = 20
+durability = 400
+
+[[item]]
+id = "axe"
+category = "tool"
+value = 20
+durability = 400
+
+[[item]]
+id = "sword"
+category = "weapon"
+value = 40
+durability = 800
+
+[[item]]
+id = "bed"
+category = "furniture"
+value = 10
+
+[[item]]
+id = "table"
+category = "furniture"
+value = 10
+
+[[item]]
+id = "chair"
+category = "furniture"
+value = 8
+
+[[item]]
+id = "chest"
+category = "container"
+capacity = 8
+value = 12
+
+[[item]]
+id = "barrel"
+category = "container"
+capacity = 6
+bulk = true
+value = 10
+
+[[item]]
+id = "ration"
+category = "food"
+material = "plant_matter"
+nutrition = 1
+stack = 10
+value = 2
+
+[[item]]
+id = "cave_mushroom"
+category = "food"
+material = "plant_matter"
+nutrition = 1
+stack = 10
+value = 1
+
+[[item]]
+id = "barley"
+category = "food"
+material = "plant_matter"
+nutrition = 1
+stack = 10
+value = 1
+
+[[item]]
+id = "stew"
+category = "food"
+material = "plant_matter"
+nutrition = 2
+cooked = true
+stack = 5
+value = 6
+
+[[item]]
+id = "cave_mushroom_spawn"
+category = "seed"
+material = "plant_matter"
+stack = 20
+value = 1
+
+[[item]]
+id = "barley_seed"
+category = "seed"
+material = "plant_matter"
+stack = 20
+value = 1

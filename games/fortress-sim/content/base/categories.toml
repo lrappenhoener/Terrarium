@@ -1,0 +1,43 @@
+# Item categories. Stockpile filters accept a category with all its descendants.
+
+[[category]]
+id = "stone"
+
+[[category]]
+id = "ore"
+
+[[category]]
+id = "bar"
+
+[[category]]
+id = "block"
+
+[[category]]
+id = "log"
+
+[[category]]
+id = "fuel"
+
+[[category]]
+id = "equipment"
+
+[[category]]
+id = "tool"
+parent = "equipment"
+
+[[category]]
+id = "weapon"
+parent = "equipment"
+
+[[category]]
+id = "furniture"
+
+[[category]]
+id = "container"
+parent = "furniture"
+
+[[category]]
+id = "food"
+
+[[category]]
+id = "seed"

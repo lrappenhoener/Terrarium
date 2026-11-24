@@ -7,17 +7,21 @@ use sim_host::{SimError, SimMetrics, StateHasher};
 
 use crate::{
     FortressSim, JobKind,
-    types::{ItemKind, ItemLocation, ResKey, ResidentId, RouteStatus, Task},
+    types::{ItemLocation, ResKey, ResidentId, RouteStatus, Task},
 };
 
 impl FortressSim {
     #[allow(clippy::float_arithmetic)]
     pub(crate) fn collect_metrics(&self) -> SimMetrics {
         // Reporting converts integer totals to display gauges.
-        let mut kinds = [0u64; 3];
+        let mut categories = vec![0u64; self.content.categories.len()];
         for kind in &self.icols.kind {
-            kinds[*kind as usize] += 1;
+            categories[usize::from(self.content.category_of(kind.0))] += 1;
         }
+        let category = |id: &str| {
+            crate::GameContent::id_of(&self.content.ids.categories, id)
+                .map_or(0, |c| categories[usize::from(c)])
+        };
         let [open, claimed, done] = self.jobs.counts();
         let path = &self.diag.path;
         let ticks = self.diag.path_ticks.max(1) as f64;
@@ -26,9 +30,9 @@ impl FortressSim {
         let hpa = self.pathfinder.hpa_stats().unwrap_or_default();
         let custom_gauges = [
             ("residents", self.residents.len() as f64),
-            ("items_stone", kinds[ItemKind::Stone as usize] as f64),
-            ("items_ore", kinds[ItemKind::Ore as usize] as f64),
-            ("items_food", kinds[ItemKind::Food as usize] as f64),
+            ("items_stone", category("stone") as f64),
+            ("items_ore", category("ore") as f64),
+            ("items_food", category("food") as f64),
             ("jobs_open", open as f64),
             ("jobs_claimed", claimed as f64),
             ("jobs_done_pending", done as f64),
@@ -372,11 +376,14 @@ impl FortressSim {
                 return fail("item references a missing haul job");
             }
         }
-        let mut indexed = [0u32; 3];
+        let categories = self.content.categories.len();
+        let mut indexed = vec![0u32; categories];
         for id in self.items.iter_by_id() {
             let Some(slot) = self.islot(id) else { continue };
             let expected = match self.icols.location[slot] {
-                ItemLocation::Ground(p) => Some((id, p, self.icols.kind[slot] as u8)),
+                ItemLocation::Ground(p) => {
+                    Some((id, p, self.content.category_of(self.icols.kind[slot].0)))
+                }
                 ItemLocation::Carried(_) => None,
             };
             if self.item_index.get(id.index) != expected {
@@ -386,7 +393,7 @@ impl FortressSim {
                 indexed[usize::from(kind)] += 1;
             }
         }
-        if (0..3).any(|kind| self.item_index.count(kind as u8) != indexed[kind]) {
+        if (0..categories).any(|kind| self.item_index.count(kind as u8) != indexed[kind]) {
             return fail("item index counts differ");
         }
         if stock.iter().any(|&count| count > 1) {

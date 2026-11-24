@@ -1,0 +1,33 @@
+# Plants. Trees grow on the surface and yield logs when felled; crops grow on
+# farm plots (underground ones below the surface) only in their seasons.
+
+[[plant]]
+id = "oak"
+tree = true
+material = "oak_wood"
+seasons = ["spring", "summer", "autumn", "winter"]
+growth_ticks = 8000
+skill = "woodcutting"
+work_ticks = 60
+harvest = [{ item = "log", amount = 3 }]
+
+[[plant]]
+id = "cave_mushroom"
+underground = true
+material = "plant_matter"
+seasons = ["spring", "summer", "autumn", "winter"]
+growth_ticks = 1500
+seed = "cave_mushroom_spawn"
+skill = "farming"
+work_ticks = 20
+harvest = [{ item = "cave_mushroom", amount = 3 }, { item = "cave_mushroom_spawn", amount = 1 }]
+
+[[plant]]
+id = "barley"
+material = "plant_matter"
+seasons = ["spring", "summer", "autumn"]
+growth_ticks = 2000
+seed = "barley_seed"
+skill = "farming"
+work_ticks = 20
+harvest = [{ item = "barley", amount = 3 }, { item = "barley_seed", amount = 1 }]

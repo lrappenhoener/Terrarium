@@ -19,7 +19,7 @@ use sim_core::{
 };
 
 use crate::{
-    FortressSim, ItemKind, SOURCE_EVENT,
+    FortressSim, SOURCE_EVENT,
     fluids::{amount, is_magma},
     types::{ItemLocation, Op},
 };
@@ -49,14 +49,14 @@ impl FortressSim {
     fn capacity(&self, p: Pos3) -> i32 {
         self.world
             .get(p)
-            .and_then(|t| self.config.materials.get(usize::from(t.material)))
+            .and_then(|t| self.content.material(t.material))
             .map_or(4, |m| m.heat_capacity.max(1))
     }
 
     fn conductivity(&self, p: Pos3) -> i32 {
         self.world
             .get(p)
-            .and_then(|t| self.config.materials.get(usize::from(t.material)))
+            .and_then(|t| self.content.material(t.material))
             .map_or(4, |m| m.conductivity)
     }
 
@@ -346,7 +346,7 @@ impl FortressSim {
             }
             if temperature >= ignite {
                 for slot in 0..self.icols.len() {
-                    if self.icols.kind[slot] == ItemKind::Food
+                    if self.content.category_of(self.icols.kind[slot].0) == self.content.food
                         && self.icols.location[slot] == ItemLocation::Ground(p)
                         && let Some(id) = self.items.id(slot as u32)
                     {

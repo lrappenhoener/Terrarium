@@ -186,7 +186,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x6eccbc989aa504b0;
+const GOLDEN_ASTAR: u64 = 0x61ad636b9d007ca9;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -297,7 +297,7 @@ fn sealed_ore_is_never_assigned_and_never_searched() {
 #[test]
 fn two_workers_one_stone_exactly_one_carries_it() {
     let mut sim = flat(calm());
-    sim.spawn_item(Pos3::new(6, 6, 1), ItemKind::Stone, 3);
+    sim.spawn_item(Pos3::new(6, 6, 1), kind(&sim, "stone"), 3);
     let stone = sim.items.iter_by_id().last().unwrap();
     sim.step(&[
         FortressCommand::Build {
@@ -344,7 +344,7 @@ fn a_wall_seals_jobs_and_digging_through_reopens_them() {
     set_wall(&mut sim, Pos3::new(20, 20, 1));
     sim.world.clear_changes();
     sim.connectivity = Connectivity::new(&sim.world);
-    sim.spawn_item(Pos3::new(2, 2, 1), ItemKind::Stone, 3);
+    sim.spawn_item(Pos3::new(2, 2, 1), kind(&sim, "stone"), 3);
     let (home, behind) = (Pos3::new(1, 1, 1), Pos3::new(19, 20, 1));
     assert!(sim.connectivity.reachable(home, behind));
     sim.step(&[FortressCommand::Build {
@@ -447,7 +447,7 @@ fn small_run(ticks: u64) -> FortressSim {
     sim
 }
 
-const GOLDEN_SNAPSHOT: &str = "tests/fixtures/fortress-v3-small.bin";
+const GOLDEN_SNAPSHOT: &str = "tests/fixtures/fortress-v4-small.bin";
 
 #[test]
 #[ignore = "writes the golden snapshot fixture"]
@@ -468,14 +468,14 @@ fn write_golden_snapshot() {
 
 #[test]
 fn golden_small_snapshot_loads_and_continues() {
-    let bytes = include_bytes!("../tests/fixtures/fortress-v3-small.bin");
+    let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x7eca89da59972239);
+    assert_eq!(sim.state_hash(), 0xf34484303eaa33cc);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x4a2b634c2f3e3429);
+    assert_eq!(sim.state_hash(), 0xef492f67477cacee);
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0xfa068482edbf7def;
+const GOLDEN_HIERARCHICAL: u64 = 0xbbff8ba1f4629811;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -511,11 +511,11 @@ fn aborting_on_a_full_stockpile_drops_outside_it() {
     }]);
     for y in 4..=14 {
         for x in 4..=14 {
-            sim.spawn_item(Pos3::new(x, y, 1), ItemKind::Stone, 3);
+            sim.spawn_item(Pos3::new(x, y, 1), kind(&sim, "stone"), 3);
         }
     }
     let carried = sim
-        .spawn_item(Pos3::new(1, 1, 1), ItemKind::Food, 0)
+        .spawn_item(Pos3::new(1, 1, 1), kind(&sim, "ration"), 0)
         .unwrap();
     let id = sim.residents.iter_by_id().next().unwrap();
     let slot = sim.rslot(id).unwrap();
@@ -557,27 +557,37 @@ fn changed_generator_version_is_reported_before_reconstruction() {
             .load_warnings()
             .is_empty()
     );
-    assert_eq!(&bytes[..8], b"FORTSNP3");
-    assert_eq!(bytes[8], 2, "generator version varint");
+    assert_eq!(&bytes[..8], b"FORTSNP4");
+    assert_eq!(bytes[8], 3, "generator version varint");
     bytes[8] = 7;
     let error = FortressSim::load_snapshot(&bytes)
         .err()
         .unwrap()
         .to_string();
     assert!(
-        error.ends_with("Weltgenerator geändert: Version 7 → 2"),
+        error.ends_with("Weltgenerator geändert: Version 7 → 3"),
         "{error}"
     );
-    // Payloads of generator version 1 are a documented break.
-    let legacy = include_bytes!("../tests/fixtures/fortress-v1-small.bin");
-    let error = FortressSim::load_snapshot(legacy)
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(
-        error.ends_with("Weltgenerator geändert: Version 1 → 2"),
-        "{error}"
-    );
+    // Payloads of earlier generator versions are a documented break.
+    for (legacy, version) in [
+        (
+            &include_bytes!("../tests/fixtures/fortress-v1-small.bin")[..],
+            1,
+        ),
+        (
+            &include_bytes!("../tests/fixtures/fortress-v3-small.bin")[..],
+            2,
+        ),
+    ] {
+        let error = FortressSim::load_snapshot(legacy)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.ends_with(&format!("Weltgenerator geändert: Version {version} → 3")),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -802,9 +812,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0xc961da72edd69363;
-const GOLDEN_MAGMA: u64 = 0x89290525a6c6150a;
-const GOLDEN_CAVEIN: u64 = 0xd0de6349237be0be;
+const GOLDEN_FLOOD: u64 = 0x29cefa6aeab7578b;
+const GOLDEN_MAGMA: u64 = 0xb862286823dccccc;
+const GOLDEN_CAVEIN: u64 = 0xc21e120fd2d33901;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -919,4 +929,120 @@ fn hysteresis_markers_survive_save_and_load() {
         loaded.step(&[]);
         assert_eq!(sim.state_hash(), loaded.state_hash(), "tick {}", sim.tick());
     }
+}
+
+#[test]
+#[ignore = "writes a debug dump for manual comparisons"]
+fn write_scenario_dump() {
+    let schedule = scenario();
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    run_with_scenario(&mut sim, &schedule, 2000, |_| {});
+    let mut dump = String::new();
+    sim.write_debug_dump(&mut dump).unwrap();
+    let path = std::env::var("DUMP_PATH").unwrap();
+    std::fs::write(path, dump).unwrap();
+}
+
+fn kind(sim: &FortressSim, id: &str) -> ItemKind {
+    ItemKind(GameContent::id_of(&sim.content.ids.items, id).unwrap())
+}
+
+#[test]
+fn embedded_base_content_matches_the_content_directory() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("content/base");
+    let files = sim_core::content::read_layer("base", &dir).unwrap();
+    let on_disk: Vec<(&str, &str)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.text.as_str()))
+        .collect();
+    assert_eq!(on_disk, crate::content::BASE.to_vec());
+}
+
+fn fixture_mod(name: &str) -> String {
+    format!("{}/tests/fixtures/mods/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn a_mod_adds_a_material_and_a_recipe() {
+    let base = GameContent::load(&[]).unwrap();
+    let modded = GameContent::load(&[fixture_mod("marble")]).unwrap();
+    assert_eq!(modded.materials.len(), base.materials.len() + 1);
+    assert_eq!(modded.recipes.len(), base.recipes.len() + 1);
+    assert_ne!(modded.fingerprint, base.fingerprint);
+    let marble = GameContent::id_of(&modded.ids.materials, "marble").unwrap();
+    let recipe = GameContent::id_of(&modded.ids.recipes, "marble_table").unwrap();
+    let output = modded.recipes[usize::from(recipe)].outputs[0];
+    assert_eq!(
+        output.material,
+        crate::content::OutputMaterial::Fixed(marble)
+    );
+    // Indices follow the sorted IDs, so the mod shifts later materials.
+    let granite = GameContent::id_of(&base.ids.materials, "granite").unwrap();
+    let modded_granite = GameContent::id_of(&modded.ids.materials, "granite").unwrap();
+    assert_eq!(granite, modded_granite);
+
+    let replaced = GameContent::load(&[fixture_mod("faster_smelting")]).unwrap();
+    let smelt = GameContent::id_of(&replaced.ids.recipes, "smelt_ore").unwrap();
+    assert_eq!(replaced.recipes[usize::from(smelt)].work_ticks, 40);
+
+    let config = FortressConfig {
+        mods: vec![fixture_mod("marble")],
+        ..FortressConfig::default()
+    };
+    let sim = FortressSim::new(42, config).unwrap();
+    let plain = FortressSim::new(42, FortressConfig::default()).unwrap();
+    assert_ne!(sim.content_fingerprint(), plain.content_fingerprint());
+}
+
+#[test]
+fn content_errors_reject_the_configuration() {
+    let dir = std::env::temp_dir().join(format!("fortress-bad-mod-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("bad.toml"),
+        "[[recipe]]\nid = \"bad\"\nworkshop = \"smithy\"\nskill = \"smithing\"\nwork_ticks = 5\ninputs = [{ category = \"bar\" }]\noutputs = [{ item = \"pick\" }]\n",
+    )
+    .unwrap();
+    let config = FortressConfig {
+        mods: vec![dir.display().to_string()],
+        ..FortressConfig::default()
+    };
+    let Err(error) = FortressSim::new(42, config) else {
+        panic!("invalid content must be rejected");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("recipe „bad“: workshop: unbekannte Referenz auf workshop „smithy“"),
+        "{error}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn snapshots_with_changed_content_are_rejected() {
+    let dir = std::env::temp_dir().join(format!("fortress-content-change-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(&fixture_mod("marble")).join("marble.toml");
+    std::fs::copy(&source, dir.join("marble.toml")).unwrap();
+    let config = FortressConfig {
+        mods: vec![dir.display().to_string()],
+        ..small()
+    };
+    let sim = FortressSim::new(42, config).unwrap();
+    let mut bytes = Vec::new();
+    sim.save_snapshot(&mut bytes).unwrap();
+    assert!(FortressSim::load_snapshot(&bytes).is_ok());
+    let text = std::fs::read_to_string(dir.join("marble.toml")).unwrap();
+    std::fs::write(
+        dir.join("marble.toml"),
+        text.replace("value = 4", "value = 5"),
+    )
+    .unwrap();
+    let error = FortressSim::load_snapshot(&bytes)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("Inhalt geändert: Fingerabdruck"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,4 +1,4 @@
-//! Snapshot payload version 1. The world is stored as the tiles that differ from
+//! Snapshot payload version 4. The world is stored as the tiles that differ from
 //! the world regenerated from seed and configuration. Connectivity, path caches,
 //! job indices, slot layout and scratch buffers are rebuilt on load.
 
@@ -62,6 +62,8 @@ struct State {
 /// payloads start directly with the state and are accepted with a warning.
 const TAG_V2: [u8; 8] = *b"FORTSNP2";
 const TAG_V3: [u8; 8] = *b"FORTSNP3";
+/// Payload version 4 adds the content fingerprint after the generator fingerprint.
+const TAG_V4: [u8; 8] = *b"FORTSNP4";
 
 #[derive(Serialize, Deserialize)]
 struct Generator {
@@ -76,7 +78,7 @@ fn fail(error: impl ToString) -> SimError {
 impl FortressSim {
     /// Logical indices and tiles that differ from the generated world.
     fn tile_changes(&self) -> Result<Vec<(u32, Tile)>, SimError> {
-        let generated = world::generate(self.seed, &self.config)?;
+        let generated = world::generate(self.seed, &self.config, &self.content)?;
         Ok(self
             .world
             .iter_logical()
@@ -158,16 +160,24 @@ impl FortressSim {
             heat_balance: self.heat_balance,
             support: self.support.pending(),
         };
-        let (version, hash) = world::generator_fingerprint(&self.config);
-        *out =
-            postcard::to_allocvec(&(TAG_V3, Generator { version, hash }, state)).map_err(fail)?;
+        let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
+        *out = postcard::to_allocvec(&(
+            TAG_V4,
+            Generator { version, hash },
+            self.content.fingerprint,
+            state,
+        ))
+        .map_err(fail)?;
         Ok(())
     }
 
     pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Self, SimError> {
         // The generator version is checked before anything else is decoded. Payload
         // versions 1 and 2 belong to generator version 1 and cannot be rebuilt.
-        if !bytes.starts_with(&TAG_V3) && !bytes.starts_with(&TAG_V2) {
+        if ![TAG_V2, TAG_V3, TAG_V4]
+            .iter()
+            .any(|tag| bytes.starts_with(tag))
+        {
             return Err(fail(format!(
                 "Weltgenerator geändert: Version 1 → {}",
                 world::GENERATOR_VERSION
@@ -182,19 +192,28 @@ impl FortressSim {
                 world::GENERATOR_VERSION
             )));
         }
-        if tag != TAG_V3 {
+        if tag != TAG_V4 {
             return Err(fail(
-                "Fortress-Snapshot-Nutzlast v2 wird nicht mehr unterstützt",
+                "Fortress-Snapshot-Nutzlast v2/v3 wird nicht mehr unterstützt",
             ));
         }
         let generator = Some(generator);
+        let (stored_content, rest) = postcard::take_from_bytes::<u64>(rest).map_err(fail)?;
         let (state, rest) = postcard::take_from_bytes::<State>(rest).map_err(fail)?;
         if !rest.is_empty() {
             return Err(fail("trailing snapshot data"));
         }
         let config: FortressConfig = serde_json::from_str(&state.config).map_err(fail)?;
         config.validate()?;
-        let (version, hash) = world::generator_fingerprint(&config);
+        let content = crate::GameContent::load(&config.mods)
+            .map_err(|error| fail(format!("Inhalt nicht ladbar: {error}")))?;
+        if content.fingerprint != stored_content {
+            return Err(fail(format!(
+                "Inhalt geändert: Fingerabdruck {stored_content:#018x} → {:#018x}",
+                content.fingerprint
+            )));
+        }
+        let (version, hash) = world::generator_fingerprint(&config, &content);
         let warning = match generator {
             Some(stored) if stored.version != version => {
                 return Err(fail(format!(
@@ -211,7 +230,7 @@ impl FortressSim {
             Some(_) => None,
             None => None::<String>,
         };
-        let mut world = world::generate(state.seed, &config)?;
+        let mut world = world::generate(state.seed, &config, &content)?;
         if state.tiles.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(fail("tile changes must ascend by index"));
         }
@@ -222,7 +241,7 @@ impl FortressSim {
             world.set(p, tile);
         }
         world.clear_changes();
-        let mut sim = Self::empty(state.seed, config, world)?;
+        let mut sim = Self::empty(state.seed, config, content, world)?;
         sim.tick = state.tick;
         let cap = sim.config.max_path_nodes as usize;
         if state.stockpiles.windows(2).any(|pair| pair[0] >= pair[1])
@@ -324,6 +343,7 @@ impl FortressSim {
         let mut hash = StateHasher::new();
         hash.write_bytes(b"fortress-content-v1");
         self.config.hash_runtime(&mut hash);
+        hash.write_u64(self.content.fingerprint);
         hash.write_u32(self.config.initial_residents);
         hash.write_u32(self.config.starting_food());
         hash.write_bool(self.config.debug_shuffle_slots);

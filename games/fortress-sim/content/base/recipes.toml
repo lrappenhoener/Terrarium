@@ -1,0 +1,120 @@
+# Recipes. Inputs name a category or an item kind and an amount; `fuel` adds that
+# many units of the fuel category. Products take the material of input
+# `material_of` (default 0), its smelting product with `smelted = true`, or a
+# fixed `material`. `work_ticks` shrink with the worker's skill level.
+
+[[recipe]]
+id = "burn_charcoal"
+workshop = "kiln"
+skill = "charcoal_burning"
+work_ticks = 60
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "charcoal", amount = 3 }]
+
+[[recipe]]
+id = "smelt_ore"
+workshop = "smelter"
+skill = "smelting"
+work_ticks = 80
+inputs = [{ category = "ore", amount = 1 }]
+fuel = 1
+outputs = [{ item = "bar", amount = 1, smelted = true }]
+
+[[recipe]]
+id = "forge_pick"
+workshop = "forge"
+skill = "smithing"
+work_ticks = 100
+inputs = [{ category = "bar", amount = 1 }]
+fuel = 1
+outputs = [{ item = "pick" }]
+
+[[recipe]]
+id = "forge_axe"
+workshop = "forge"
+skill = "smithing"
+work_ticks = 100
+inputs = [{ category = "bar", amount = 1 }]
+fuel = 1
+outputs = [{ item = "axe" }]
+
+[[recipe]]
+id = "forge_sword"
+workshop = "forge"
+skill = "smithing"
+work_ticks = 140
+inputs = [{ category = "bar", amount = 2 }]
+fuel = 1
+outputs = [{ item = "sword" }]
+
+[[recipe]]
+id = "cut_blocks"
+workshop = "mason"
+skill = "masonry"
+work_ticks = 40
+inputs = [{ category = "stone", amount = 1 }]
+outputs = [{ item = "block", amount = 2 }]
+
+[[recipe]]
+id = "stone_table"
+workshop = "mason"
+skill = "masonry"
+work_ticks = 70
+inputs = [{ category = "block", amount = 2 }]
+outputs = [{ item = "table" }]
+
+[[recipe]]
+id = "stone_chair"
+workshop = "mason"
+skill = "masonry"
+work_ticks = 60
+inputs = [{ category = "block", amount = 1 }]
+outputs = [{ item = "chair" }]
+
+[[recipe]]
+id = "wooden_bed"
+workshop = "carpenter"
+skill = "carpentry"
+work_ticks = 70
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "bed" }]
+
+[[recipe]]
+id = "wooden_table"
+workshop = "carpenter"
+skill = "carpentry"
+work_ticks = 60
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "table" }]
+
+[[recipe]]
+id = "wooden_chair"
+workshop = "carpenter"
+skill = "carpentry"
+work_ticks = 50
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "chair" }]
+
+[[recipe]]
+id = "wooden_chest"
+workshop = "carpenter"
+skill = "carpentry"
+work_ticks = 60
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "chest" }]
+
+[[recipe]]
+id = "wooden_barrel"
+workshop = "carpenter"
+skill = "carpentry"
+work_ticks = 60
+inputs = [{ category = "log", amount = 1 }]
+outputs = [{ item = "barrel" }]
+
+[[recipe]]
+id = "cook_stew"
+workshop = "kitchen"
+skill = "cooking"
+work_ticks = 40
+inputs = [{ category = "food", amount = 2, raw = true }]
+outputs = [{ item = "stew", amount = 2, material = "plant_matter" }]

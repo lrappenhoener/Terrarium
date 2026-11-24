@@ -162,9 +162,7 @@ impl FortressSim {
     }
 
     fn is_aquifer_source(&self, p: Pos3) -> bool {
-        let Some(aquifer) = self.config.aquifer_material() else {
-            return false;
-        };
+        let aquifer = self.content.aquifer;
         self.world.get(p).is_some_and(|t| t.kind != TileKind::Solid)
             && [
                 (1, 0, 0),
@@ -184,9 +182,6 @@ impl FortressSim {
 
     /// Recomputes exposed aquifer faces inside the given chunks and one tile around.
     pub(crate) fn update_aquifer_sources(&mut self, chunks: &[ChunkId]) {
-        if self.config.aquifer_material().is_none() {
-            return;
-        }
         for &chunk in chunks {
             let Some((low, high)) = self.world.chunk_bounds(chunk) else {
                 continue;
@@ -504,11 +499,10 @@ impl FortressSim {
                 self.balance.converted[kind(target)] += u64::from(amount(target));
                 self.balance.total[kind(target)] -= u64::from(amount(target));
                 self.set_fluid(t.target, 0);
-                if let Some(obsidian) = self.config.obsidian() {
-                    self.scratch
-                        .fluid_tiles
-                        .push((t.target, Tile::new(TileKind::Solid, false, obsidian)));
-                }
+                let obsidian = self.content.obsidian;
+                self.scratch
+                    .fluid_tiles
+                    .push((t.target, Tile::new(TileKind::Solid, false, obsidian)));
             } else {
                 if actual > 0 {
                     let target = self.fluid_at(t.target);

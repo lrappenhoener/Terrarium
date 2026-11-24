@@ -2,9 +2,9 @@
 
 use sim_core::space::{Pos3, TileKind};
 
-use crate::{FortressSim, ItemKind, types::ItemLocation, world};
+use crate::{FortressSim, types::ItemLocation, world};
 
-pub const LEGEND: &str = "@ resident  o stone  $ ore item  f food  # rock  * ore  : soil  W wall  \
+pub const LEGEND: &str = "@ resident  o stone  $ ore item  f food  i other item  # rock  * ore  : soil  W wall  \
 . floor  = stockpile  < up  > down  X up/down  ^ ramp  + door  (blank) air";
 
 impl FortressSim {
@@ -13,7 +13,7 @@ impl FortressSim {
         if !(0..self.world.depth()).contains(&z) {
             return None;
         }
-        let generated = world::generate(self.seed, &self.config).ok()?;
+        let generated = world::generate(self.seed, &self.config, &self.content).ok()?;
         let (w, h) = (self.world.width(), self.world.height());
         let mut cells = vec![b' '; (w * h) as usize];
         for y in 0..h {
@@ -23,14 +23,13 @@ impl FortressSim {
                     continue;
                 };
                 let ore = self
-                    .config
-                    .materials
-                    .get(usize::from(tile.material))
-                    .is_some_and(|m| m.ore);
+                    .content
+                    .material(tile.material)
+                    .is_some_and(|m| m.class == crate::content::MaterialClass::Ore);
                 cells[(y * w + x) as usize] = match tile.kind {
                     TileKind::Solid if tile != original => b'W',
                     TileKind::Solid if ore => b'*',
-                    TileKind::Solid if tile.material == world::SOIL => b':',
+                    TileKind::Solid if tile.material == self.content.soil => b':',
                     TileKind::Solid => b'#',
                     TileKind::Open if tile.floor() && self.stockpiles.binary_search(&p).is_ok() => {
                         b'='
@@ -49,10 +48,12 @@ impl FortressSim {
             if let ItemLocation::Ground(p) = self.icols.location[slot]
                 && p.z == z
             {
-                cells[(p.y * w + p.x) as usize] = match self.icols.kind[slot] {
-                    ItemKind::Stone => b'o',
-                    ItemKind::Ore => b'$',
-                    ItemKind::Food => b'f',
+                let category = self.content.category_of(self.icols.kind[slot].0);
+                cells[(p.y * w + p.x) as usize] = match category {
+                    c if c == self.content.stone => b'o',
+                    c if c == self.content.food => b'f',
+                    c if self.content.ids.categories[usize::from(c)] == "ore" => b'$',
+                    _ => b'i',
                 };
             }
         }

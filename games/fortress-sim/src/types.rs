@@ -33,14 +33,17 @@ pub enum BuildKind {
     Door,
 }
 
+/// Item kind: a dense index into the content's item definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum ItemKind {
-    Stone,
-    Ore,
-    Food,
+pub struct ItemKind(pub u16);
+
+impl StateHash for ItemKind {
+    fn state_hash(&self, hash: &mut StateHasher) {
+        self.0.state_hash(hash);
+    }
 }
 
-sim_core::state_hash_enum!(DigMode, BuildKind, ItemKind);
+sim_core::state_hash_enum!(DigMode, BuildKind);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemLocation {

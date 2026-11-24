@@ -1,0 +1,117 @@
+# Materials. `stratum` orders the generated layers from the surface (0) down,
+# `vein` orders the ore veins. Dig times are in ticks, heat values are integer
+# units (Etappe 5).
+
+[[material]]
+id = "soil"
+class = "soil"
+dig_ticks = 8
+dig_item = "stone"
+stratum = 0
+value = 0
+
+[[material]]
+id = "sandstone"
+class = "rock"
+dig_ticks = 14
+dig_item = "stone"
+stratum = 1
+value = 1
+
+[[material]]
+id = "limestone"
+class = "rock"
+dig_ticks = 18
+dig_item = "stone"
+stratum = 2
+value = 1
+
+[[material]]
+id = "granite"
+class = "rock"
+dig_ticks = 26
+dig_item = "stone"
+stratum = 3
+value = 2
+
+[[material]]
+id = "basalt"
+class = "rock"
+dig_ticks = 32
+dig_item = "stone"
+stratum = 4
+value = 2
+
+[[material]]
+id = "wet_sandstone"
+class = "rock"
+dig_ticks = 14
+dig_item = "stone"
+aquifer = true
+value = 1
+
+[[material]]
+id = "obsidian"
+class = "rock"
+dig_ticks = 60
+dig_item = "stone"
+magma_product = true
+conductivity = 6
+heat_capacity = 6
+value = 5
+
+[[material]]
+id = "iron_ore"
+class = "ore"
+dig_ticks = 30
+dig_item = "ore"
+vein = 0
+smelts_into = "iron"
+value = 3
+
+[[material]]
+id = "copper_ore"
+class = "ore"
+dig_ticks = 24
+dig_item = "ore"
+vein = 1
+smelts_into = "copper"
+value = 3
+
+[[material]]
+id = "gold_ore"
+class = "ore"
+dig_ticks = 36
+dig_item = "ore"
+vein = 2
+smelts_into = "gold"
+value = 8
+
+[[material]]
+id = "iron"
+class = "metal"
+value = 10
+
+[[material]]
+id = "copper"
+class = "metal"
+value = 8
+
+[[material]]
+id = "gold"
+class = "metal"
+value = 30
+
+[[material]]
+id = "oak_wood"
+class = "wood"
+flammable = true
+conductivity = 2
+heat_capacity = 3
+value = 2
+
+[[material]]
+id = "plant_matter"
+class = "plant"
+flammable = true
+value = 1

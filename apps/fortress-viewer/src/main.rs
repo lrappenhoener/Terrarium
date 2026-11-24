@@ -265,6 +265,9 @@ async fn main() {
         ore: (0..view.material_count() as u16)
             .map(|m| view.is_ore(m))
             .collect(),
+        item_categories: (0..view.content().items.len() as u16)
+            .map(|k| view.item_category(fortress_sim::ItemKind(k)).to_owned())
+            .collect(),
     };
     let mut mirror = Mirror::new(dims, view.generated_tiles().unwrap_or_default());
     let mut residents = Vec::new();

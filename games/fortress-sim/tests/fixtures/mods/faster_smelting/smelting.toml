@@ -1,0 +1,11 @@
+# Example override: replaces the base smelting recipe.
+
+[[recipe]]
+id = "smelt_ore"
+override = true
+workshop = "smelter"
+skill = "smelting"
+work_ticks = 40
+inputs = [{ category = "ore", amount = 1 }]
+fuel = 1
+outputs = [{ item = "bar", amount = 1, smelted = true }]

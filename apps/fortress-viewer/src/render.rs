@@ -2,7 +2,7 @@
 //! `main.rs`, so the library could be replaced without touching the logic.
 //! All graphics are simple shapes drawn in code (see ASSETS.md).
 
-use fortress_sim::{ItemKind, view::JobOverlay};
+use fortress_sim::view::JobOverlay;
 use fortress_viewer::{
     camera::Camera,
     frame::{Frame, Mirror},
@@ -14,6 +14,8 @@ use sim_core::space::{Pos3, Tile, TileKind};
 pub struct Materials {
     pub names: Vec<String>,
     pub ore: Vec<bool>,
+    /// Category ID per item kind.
+    pub item_categories: Vec<String>,
 }
 
 impl Materials {
@@ -328,10 +330,16 @@ pub fn draw_world(
             continue;
         }
         let (sx, sy) = camera.tile_to_screen(item.pos.x as f32, item.pos.y as f32, screen);
-        let color = match item.kind {
-            ItemKind::Stone => Color::from_rgba(170, 170, 160, 255),
-            ItemKind::Ore => Color::from_rgba(220, 160, 60, 255),
-            ItemKind::Food => Color::from_rgba(80, 200, 80, 255),
+        let category = materials
+            .item_categories
+            .get(usize::from(item.kind.0))
+            .map_or("", String::as_str);
+        let color = match category {
+            "stone" | "block" => Color::from_rgba(170, 170, 160, 255),
+            "ore" | "bar" => Color::from_rgba(220, 160, 60, 255),
+            "food" | "seed" => Color::from_rgba(80, 200, 80, 255),
+            "log" | "fuel" => Color::from_rgba(150, 100, 50, 255),
+            _ => Color::from_rgba(120, 170, 230, 255),
         };
         draw_rectangle(sx + s * 0.3, sy + s * 0.3, s * 0.4, s * 0.4, color);
     }

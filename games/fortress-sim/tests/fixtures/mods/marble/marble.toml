@@ -1,0 +1,16 @@
+# Example mod: a new rock material and a recipe that turns it into tables.
+
+[[material]]
+id = "marble"
+class = "rock"
+dig_ticks = 22
+dig_item = "stone"
+value = 4
+
+[[recipe]]
+id = "marble_table"
+workshop = "mason"
+skill = "masonry"
+work_ticks = 80
+inputs = [{ category = "stone", amount = 2 }]
+outputs = [{ item = "table", material = "marble" }]

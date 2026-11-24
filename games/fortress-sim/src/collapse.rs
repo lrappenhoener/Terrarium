@@ -170,15 +170,17 @@ impl FortressSim {
                     }
                 }
             }
-            self.ops.push(
-                (SOURCE_EVENT, u64::MAX - 2),
-                self.world.index(top).unwrap_or(0) as u32,
-                EntityCommand::Spawn(Op::SpawnItem {
-                    at: landing,
-                    kind: ItemKind::Stone,
-                    material,
-                }),
-            );
+            if let Some(kind) = self.content.material(material).and_then(|m| m.dig_item) {
+                self.ops.push(
+                    (SOURCE_EVENT, u64::MAX - 2),
+                    self.world.index(top).unwrap_or(0) as u32,
+                    EntityCommand::Spawn(Op::SpawnItem {
+                        at: landing,
+                        kind: ItemKind(kind),
+                        material,
+                    }),
+                );
+            }
         }
         self.scratch.fall_paths.clear();
         self.scratch.fluid_tiles.sort_unstable_by_key(|&(p, _)| p);

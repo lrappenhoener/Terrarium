@@ -1,0 +1,33 @@
+# Skills. `levels` are the experience thresholds of levels 0, 1, 2, ...
+
+[[skill]]
+id = "woodcutting"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "farming"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "carpentry"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "masonry"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "smelting"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "smithing"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "cooking"
+levels = [0, 40, 120, 300, 600, 1000]
+
+[[skill]]
+id = "charcoal_burning"
+levels = [0, 40, 120, 300, 600, 1000]

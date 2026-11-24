@@ -6,9 +6,8 @@ use sim_core::{
 };
 use sim_host::SimError;
 
-use crate::FortressConfig;
+use crate::{FortressConfig, content::GameContent};
 
-pub(crate) const SOIL: u16 = 0;
 const NOISE_CELL: i64 = 8;
 
 /// Smooth integer value noise in `-amplitude..=amplitude`.
@@ -55,18 +54,22 @@ fn rock_layer(seed: u64, config: &FortressConfig, rocks: &[u16], p: Pos3) -> u16
     rocks[layer as usize]
 }
 
-pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid3<Tile>, SimError> {
+pub(crate) fn generate(
+    seed: u64,
+    config: &FortressConfig,
+    content: &GameContent,
+) -> Result<ChunkedGrid3<Tile>, SimError> {
     let (size, depth) = (config.world_size_xy, config.world_depth);
-    let mut world = ChunkedGrid3::new(size, size, depth, Tile::new(TileKind::Open, false, SOIL))
-        .ok_or_else(|| SimError::InvalidConfig("could not reserve world".into()))?;
-    let rocks: Vec<u16> = (1..config.materials.len() as u16)
-        .filter(|&m| {
-            !config.materials[usize::from(m)].ore && config.materials[usize::from(m)].layer
-        })
-        .collect();
-    let ores: Vec<u16> = (1..config.materials.len() as u16)
-        .filter(|&m| config.materials[usize::from(m)].ore)
-        .collect();
+    let soil_material = content.soil;
+    let mut world = ChunkedGrid3::new(
+        size,
+        size,
+        depth,
+        Tile::new(TileKind::Open, false, soil_material),
+    )
+    .ok_or_else(|| SimError::InvalidConfig("could not reserve world".into()))?;
+    let rocks = &content.rocks;
+    let ores = &content.ores;
     for y in 0..size {
         for x in 0..size {
             let level = surface(seed, config, x, y);
@@ -75,13 +78,13 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
                 let p = Pos3::new(x, y, z);
                 let tile = if z < level {
                     let material = if i64::from(level - 1 - z) < soil {
-                        SOIL
+                        soil_material
                     } else {
-                        rock_layer(seed, config, &rocks, p)
+                        rock_layer(seed, config, rocks, p)
                     };
                     Tile::new(TileKind::Solid, false, material)
                 } else {
-                    Tile::new(TileKind::Open, z == level, SOIL)
+                    Tile::new(TileKind::Open, z == level, soil_material)
                 };
                 world.set(p, tile);
             }
@@ -105,7 +108,7 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
             for _ in 0..config.ore_vein_length {
                 if let Some(&tile) = world.get(p)
                     && tile.kind == TileKind::Solid
-                    && tile.material != SOIL
+                    && tile.material != soil_material
                 {
                     world.set(p, Tile::new(TileKind::Solid, false, ore));
                 }
@@ -124,7 +127,7 @@ pub(crate) fn generate(seed: u64, config: &FortressConfig) -> Result<ChunkedGrid
             }
         }
     }
-    carve_physics(config, &mut world);
+    carve_physics(config, content, &mut world);
     world.clear_changes();
     Ok(world)
 }
@@ -138,9 +141,11 @@ pub(crate) fn river(config: &FortressConfig) -> Option<(std::ops::Range<i32>, i3
     })
 }
 
-fn carve_physics(config: &FortressConfig, world: &mut ChunkedGrid3<Tile>) {
+fn carve_physics(config: &FortressConfig, content: &GameContent, world: &mut ChunkedGrid3<Tile>) {
     let p = &config.physics;
-    if let Some(aquifer) = config.aquifer_material() {
+    let soil_material = content.soil;
+    {
+        let aquifer = content.aquifer;
         let r2 = i64::from(p.aquifer_radius).pow(2);
         for z in p.aquifer_z_low..=p.aquifer_z_high {
             for y in 0..config.world_size_xy {
@@ -149,9 +154,9 @@ fn carve_physics(config: &FortressConfig, world: &mut ChunkedGrid3<Tile>) {
                     let dy = i64::from(y - p.aquifer_center_y);
                     let at = Pos3::new(x, y, z);
                     if dx * dx + dy * dy <= r2
-                        && world
-                            .get(at)
-                            .is_some_and(|t| t.kind == TileKind::Solid && t.material != SOIL)
+                        && world.get(at).is_some_and(|t| {
+                            t.kind == TileKind::Solid && t.material != soil_material
+                        })
                     {
                         world.set(at, Tile::new(TileKind::Solid, false, aquifer));
                     }
@@ -162,10 +167,13 @@ fn carve_physics(config: &FortressConfig, world: &mut ChunkedGrid3<Tile>) {
     if let Some((xs, bed)) = river(config) {
         for y in 0..config.world_size_xy {
             for x in xs.clone() {
-                world.set(Pos3::new(x, y, bed), Tile::new(TileKind::Open, true, SOIL));
+                world.set(
+                    Pos3::new(x, y, bed),
+                    Tile::new(TileKind::Open, true, soil_material),
+                );
                 world.set(
                     Pos3::new(x, y, bed + 1),
-                    Tile::new(TileKind::Open, false, SOIL),
+                    Tile::new(TileKind::Open, false, soil_material),
                 );
             }
         }
@@ -175,7 +183,7 @@ fn carve_physics(config: &FortressConfig, world: &mut ChunkedGrid3<Tile>) {
             for x in 0..config.world_size_xy {
                 world.set(
                     Pos3::new(x, y, 0),
-                    Tile::new(TileKind::Open, true, SOIL).with_impassable(true),
+                    Tile::new(TileKind::Open, true, soil_material).with_impassable(true),
                 );
             }
         }
@@ -212,15 +220,14 @@ pub(crate) fn generate_fluids(config: &FortressConfig) -> Option<ChunkedGrid3<u8
 
 /// Manually maintained generator version. Every change to the generated world
 /// increments it, so stored worlds cannot be combined with a different generator.
-pub(crate) const GENERATOR_VERSION: u32 = 2;
+pub(crate) const GENERATOR_VERSION: u32 = 3;
 
 /// Hash over the generator version, its internal constants and all generator inputs.
-pub(crate) fn generator_fingerprint(config: &FortressConfig) -> (u32, u64) {
+pub(crate) fn generator_fingerprint(config: &FortressConfig, content: &GameContent) -> (u32, u64) {
     let mut hash = sim_host::StateHasher::new();
     hash.write_bytes(b"fortress-generator");
     hash.write_u32(GENERATOR_VERSION);
     hash.write_u64(NOISE_CELL as u64);
-    hash.write_u32(u32::from(SOIL));
     for value in [
         config.world_size_xy,
         config.world_depth,
@@ -248,13 +255,7 @@ pub(crate) fn generator_fingerprint(config: &FortressConfig) -> (u32, u64) {
         hash.write_u32(value as u32);
     }
     hash.write_u8(p.river_initial_level);
-    hash.write_usize(config.materials.len());
-    for material in &config.materials {
-        hash.write_bytes(material.name.as_bytes());
-        hash.write_u8(0);
-        hash.write_bool(material.ore);
-        hash.write_bool(material.aquifer);
-        hash.write_bool(material.layer);
-    }
+    // Materials, strata and veins come from the content.
+    hash.write_u64(content.fingerprint);
     (GENERATOR_VERSION, hash.finish())
 }

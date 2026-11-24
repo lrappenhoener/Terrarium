@@ -1,0 +1,38 @@
+# Workshops. The footprint is `size` tiles wide and deep; ingredients arrive on
+# the input tile (first corner), products appear on the output tile (opposite corner).
+
+[[workshop]]
+id = "carpenter"
+size = 3
+build = [{ category = "stone", amount = 2 }]
+build_ticks = 120
+
+[[workshop]]
+id = "mason"
+size = 3
+build = [{ category = "stone", amount = 2 }]
+build_ticks = 120
+
+[[workshop]]
+id = "kiln"
+size = 3
+build = [{ category = "stone", amount = 3 }]
+build_ticks = 150
+
+[[workshop]]
+id = "smelter"
+size = 3
+build = [{ category = "stone", amount = 3 }]
+build_ticks = 150
+
+[[workshop]]
+id = "forge"
+size = 3
+build = [{ category = "stone", amount = 3 }]
+build_ticks = 150
+
+[[workshop]]
+id = "kitchen"
+size = 3
+build = [{ category = "stone", amount = 2 }]
+build_ticks = 120

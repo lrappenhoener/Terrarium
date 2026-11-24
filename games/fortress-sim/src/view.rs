@@ -105,22 +105,47 @@ impl View<'_> {
 
     pub fn material_name(&self, material: u16) -> Option<&str> {
         self.sim
-            .config
+            .content
+            .ids
             .materials
             .get(usize::from(material))
-            .map(|m| m.name.as_str())
+            .map(String::as_str)
     }
 
     pub fn is_ore(&self, material: u16) -> bool {
         self.sim
-            .config
-            .materials
-            .get(usize::from(material))
-            .is_some_and(|m| m.ore)
+            .content
+            .material(material)
+            .is_some_and(|m| m.class == crate::content::MaterialClass::Ore)
     }
 
     pub fn material_count(&self) -> usize {
-        self.sim.config.materials.len()
+        self.sim.content.materials.len()
+    }
+
+    /// Content of the running simulation: definitions and string IDs for display.
+    pub fn content(&self) -> &crate::GameContent {
+        &self.sim.content
+    }
+
+    pub fn item_name(&self, kind: ItemKind) -> &str {
+        self.sim
+            .content
+            .ids
+            .items
+            .get(usize::from(kind.0))
+            .map_or("", String::as_str)
+    }
+
+    /// String ID of the item kind's category.
+    pub fn item_category(&self, kind: ItemKind) -> &str {
+        let category = self.sim.content.category_of(kind.0);
+        self.sim
+            .content
+            .ids
+            .categories
+            .get(usize::from(category))
+            .map_or("", String::as_str)
     }
 
     /// Residents in ascending ID order.
@@ -225,7 +250,8 @@ impl View<'_> {
     /// Tiles of the freshly generated world in logical order, to tell built walls
     /// from natural rock. Regenerates the world; call once per session.
     pub fn generated_tiles(&self) -> Option<Vec<Tile>> {
-        let world = crate::world::generate(self.sim.seed, &self.sim.config).ok()?;
+        let world =
+            crate::world::generate(self.sim.seed, &self.sim.config, &self.sim.content).ok()?;
         Some(world.iter_logical().map(|(_, tile)| *tile).collect())
     }
 

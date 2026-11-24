@@ -5,6 +5,7 @@
 
 mod collapse;
 mod config;
+pub mod content;
 mod diagnostics;
 mod fluids;
 mod render;
@@ -14,7 +15,8 @@ mod types;
 pub mod view;
 mod world;
 
-pub use config::{FortressConfig, MaterialConfig, Pathfinding, PhysicsConfig};
+pub use config::{FortressConfig, Pathfinding, PhysicsConfig};
+pub use content::GameContent;
 pub use sim_core::space::{Pos3, Tile, TileKind};
 pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 
@@ -183,6 +185,7 @@ type OpSource = (u8, u64);
 
 pub struct FortressSim {
     config: FortressConfig,
+    content: GameContent,
     seed: u64,
     tick: u64,
     world: ChunkedGrid3<Tile>,
@@ -418,6 +421,7 @@ impl FortressSim {
     fn empty(
         seed: u64,
         config: FortressConfig,
+        content: GameContent,
         world: ChunkedGrid3<Tile>,
     ) -> Result<Self, SimError> {
         let residents = config.max_residents;
@@ -447,7 +451,7 @@ impl FortressSim {
             heat_balance: temperature::HeatBalance::default(),
             heat_sources: Vec::with_capacity(1 << 16),
             support: SupportChecker::new(world.len(), 1 << 16),
-            item_index: CategoryIndex::new(w, w, d, 3, items)
+            item_index: CategoryIndex::new(w, w, d, content.categories.len() as u8, items)
                 .ok_or_else(|| SimError::InvalidConfig("could not create item index".into()))?,
             jobs: JobBoard::new(config.max_jobs as usize, w, w, d),
             reservations: Reservations::with_capacity(residents as usize * 2 + 16),
@@ -466,6 +470,7 @@ impl FortressSim {
             load_warnings: Vec::new(),
             world,
             config,
+            content,
         })
     }
 
@@ -740,8 +745,8 @@ impl FortressSim {
         match self.islot(id) {
             Some(slot) => match self.icols.location[slot] {
                 ItemLocation::Ground(p) => {
-                    self.item_index
-                        .insert(id.index, id, p, self.icols.kind[slot] as u8);
+                    let category = self.content.category_of(self.icols.kind[slot].0);
+                    self.item_index.insert(id.index, id, p, category);
                 }
                 ItemLocation::Carried(_) => {
                     self.item_index.remove(id.index);
@@ -760,8 +765,8 @@ impl FortressSim {
         }
     }
 
-    /// Loose, unreserved items of a kind.
-    fn free_items(&self, kind: ItemKind) -> u32 {
+    /// Loose, unreserved items of a category.
+    fn free_items(&self, category: u8) -> u32 {
         let reserved = self
             .reservations
             .iter()
@@ -769,18 +774,18 @@ impl FortressSim {
                 ResKey::Item(item) => self
                     .item_index
                     .get(item.index)
-                    .is_some_and(|(key, _, category)| key == item && category == kind as u8),
+                    .is_some_and(|(key, _, c)| key == item && c == category),
                 ResKey::Slot(_) => false,
             })
             .count() as u32;
-        self.item_index.count(kind as u8).saturating_sub(reserved)
+        self.item_index.count(category).saturating_sub(reserved)
     }
 
     /// Nearest loose, unreserved and reachable item by `(distance, id)`, the same
     /// minimum as an exhaustive scan.
-    fn nearest_free_item(&self, at: Pos3, kind: ItemKind) -> Option<(u32, ItemId)> {
+    fn nearest_free_item(&self, at: Pos3, category: u8) -> Option<(u32, ItemId)> {
         self.item_index
-            .nearest(at, kind as u8, u32::MAX, |item, p| {
+            .nearest(at, category, u32::MAX, |item, p| {
                 !self.reservations.is_reserved(ResKey::Item(item))
                     && self.connectivity.reachable(at, p)
             })
@@ -1122,7 +1127,7 @@ impl FortressSim {
                 continue;
             }
             let at = self.rcols.position[slot];
-            if let Some((distance, item)) = self.nearest_free_item(at, ItemKind::Food) {
+            if let Some((distance, item)) = self.nearest_free_item(at, self.content.food) {
                 self.reservations
                     .claim(ResKey::Item(item), id, FOOD_PRIORITY, distance);
             }
@@ -1172,7 +1177,7 @@ impl FortressSim {
             .zip(&self.stockpiles)
             .filter(|&(&count, &p)| count == 0 && !self.reservations.is_reserved(ResKey::Slot(p)))
             .count();
-        let stones = self.free_items(ItemKind::Stone) > 0;
+        let stones = self.free_items(self.content.stone) > 0;
         {
             let (world, connectivity, reservations, icols, items) = (
                 &self.world,
@@ -1254,7 +1259,7 @@ impl FortressSim {
                     })
                 }),
                 JobKind::Build(_) => self.best_site(at, job_id).and_then(|site| {
-                    let (distance, stone) = self.nearest_free_item(at, ItemKind::Stone)?;
+                    let (distance, stone) = self.nearest_free_item(at, self.content.stone)?;
                     self.reservations
                         .claim(ResKey::Item(stone), worker, priority, distance);
                     Some(Task::Build {
@@ -1513,29 +1518,24 @@ impl FortressSim {
                         continue;
                     };
                     debug_assert_eq!(site, at);
-                    let duration = self
-                        .config
-                        .materials
-                        .get(usize::from(tile.material))
-                        .map_or(1, |m| m.dig_ticks);
+                    let material = self.content.material(tile.material);
+                    let duration = material.map_or(1, |m| m.dig_ticks.max(1));
+                    let product = material.and_then(|m| m.dig_item);
                     if tick_work(&mut self.rcols.work[slot], duration) {
                         self.scratch
                             .tile_changes
                             .push((target, dig_result(tile, mode)));
-                        let ore = self
-                            .config
-                            .materials
-                            .get(usize::from(tile.material))
-                            .is_some_and(|m| m.ore);
-                        self.ops.push(
-                            (SOURCE_RESIDENT, id.to_u64()),
-                            0,
-                            EntityCommand::Spawn(Op::SpawnItem {
-                                at: target,
-                                kind: if ore { ItemKind::Ore } else { ItemKind::Stone },
-                                material: tile.material,
-                            }),
-                        );
+                        if let Some(kind) = product {
+                            self.ops.push(
+                                (SOURCE_RESIDENT, id.to_u64()),
+                                0,
+                                EntityCommand::Spawn(Op::SpawnItem {
+                                    at: target,
+                                    kind: ItemKind(kind),
+                                    material: tile.material,
+                                }),
+                            );
+                        }
                         self.jobs.complete(job);
                         self.counters.dug += 1;
                         self.counters.completed_jobs += 1;
@@ -1787,8 +1787,8 @@ impl FortressSim {
                                 ordinal,
                                 EntityCommand::Spawn(Op::SpawnItem {
                                     at,
-                                    kind: ItemKind::Food,
-                                    material: 0,
+                                    kind: ItemKind(self.content.ration),
+                                    material: self.content.ration_material,
                                 }),
                             );
                         }
@@ -1809,8 +1809,10 @@ impl Simulation for FortressSim {
 
     fn new(seed: u64, config: FortressConfig) -> Result<Self, SimError> {
         config.validate()?;
-        let world = world::generate(seed, &config)?;
-        let mut sim = Self::empty(seed, config, world)?;
+        let content = GameContent::load(&config.mods)
+            .map_err(|error| SimError::InvalidConfig(error.to_string()))?;
+        let world = world::generate(seed, &config, &content)?;
+        let mut sim = Self::empty(seed, config, content, world)?;
         let mut spots = Vec::new();
         sim.standing_tiles_near(
             sim.embark(),
@@ -1826,7 +1828,11 @@ impl Simulation for FortressSim {
         sim.standing_tiles_near(sim.embark(), 9, &mut spots);
         for i in 0..sim.config.starting_food() as usize {
             if let Some(&at) = spots.get(i % spots.len().max(1)) {
-                sim.spawn_item(at, ItemKind::Food, 0);
+                sim.spawn_item(
+                    at,
+                    ItemKind(sim.content.ration),
+                    sim.content.ration_material,
+                );
             }
         }
         sim.events.push(sim.config.caravan_interval, Event::Caravan);
@@ -1894,11 +1900,11 @@ impl Simulation for FortressSim {
     }
 
     fn snapshot_version() -> u32 {
-        3
+        4
     }
 
     fn min_snapshot_version() -> u32 {
-        3
+        4
     }
 
     fn load_warnings(&self) -> Vec<String> {

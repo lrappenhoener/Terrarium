@@ -1,44 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sim_host::{SimError, StateHasher};
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct MaterialConfig {
-    pub name: String,
-    pub dig_ticks: u32,
-    pub ore: bool,
-    /// Water-bearing rock that releases water into adjacent open tiles.
-    pub aquifer: bool,
-    /// Whether the generator uses the material as a rock layer.
-    pub layer: bool,
-    /// Heat conductivity and capacity in integer units.
-    pub conductivity: i32,
-    pub heat_capacity: i32,
-}
-
-impl Default for MaterialConfig {
-    fn default() -> Self {
-        Self {
-            name: "stone".into(),
-            dig_ticks: 20,
-            ore: false,
-            aquifer: false,
-            layer: true,
-            conductivity: 4,
-            heat_capacity: 4,
-        }
-    }
-}
-
-fn material(name: &str, dig_ticks: u32, ore: bool) -> MaterialConfig {
-    MaterialConfig {
-        name: name.into(),
-        dig_ticks,
-        ore,
-        ..MaterialConfig::default()
-    }
-}
-
 /// World physics settings. Temperatures are absolute integer degrees.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -121,8 +83,8 @@ pub enum Pathfinding {
     Hierarchical,
 }
 
-/// Effective settings. Material 0 is the surface soil; the remaining non-ore
-/// materials form rock layers from top to bottom; ore materials form veins.
+/// Effective settings. Materials, items, recipes and other content come from the
+/// embedded base content and the directories in `mods`, loaded in that order.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FortressConfig {
@@ -135,7 +97,8 @@ pub struct FortressConfig {
     pub mountain_height: i32,
     pub ore_veins: u32,
     pub ore_vein_length: u32,
-    pub materials: Vec<MaterialConfig>,
+    /// Content directories loaded after the base content, in order.
+    pub mods: Vec<String>,
     pub embark_x: i32,
     pub embark_y: i32,
     pub initial_residents: u32,
@@ -181,27 +144,7 @@ impl Default for FortressConfig {
             mountain_height: 16,
             ore_veins: 24,
             ore_vein_length: 40,
-            materials: vec![
-                material("soil", 8, false),
-                material("sandstone", 14, false),
-                material("limestone", 18, false),
-                material("granite", 26, false),
-                material("basalt", 32, false),
-                material("iron_ore", 30, true),
-                material("copper_ore", 24, true),
-                material("gold_ore", 36, true),
-                MaterialConfig {
-                    aquifer: true,
-                    layer: false,
-                    ..material("wet_sandstone", 14, false)
-                },
-                MaterialConfig {
-                    conductivity: 6,
-                    heat_capacity: 6,
-                    layer: false,
-                    ..material("obsidian", 60, false)
-                },
-            ],
+            mods: Vec::new(),
             embark_x: 6,
             embark_y: 48,
             initial_residents: 25,
@@ -250,22 +193,6 @@ impl FortressConfig {
         {
             return fail("invalid world dimensions, ground level or mountain");
         }
-        if self.materials.len() < 2
-            || self.materials.len() > usize::from(u16::MAX)
-            || self
-                .materials
-                .iter()
-                .any(|m| m.dig_ticks == 0 || m.dig_ticks > 100_000)
-            || self.materials[0].ore
-            || !self.materials.iter().skip(1).any(|m| !m.ore && m.layer)
-            || self
-                .materials
-                .iter()
-                .any(|m| m.conductivity < 0 || m.heat_capacity <= 0)
-            || self.obsidian().is_none()
-        {
-            return fail("materials need soil first, at least one rock and positive dig times");
-        }
         if self.initial_residents > self.max_residents
             || !(1..=1_000_000).contains(&self.max_residents)
             || !(1..=4_000_000).contains(&self.max_items)
@@ -307,21 +234,6 @@ impl FortressConfig {
             return fail("invalid rates, durations or budgets");
         }
         Ok(())
-    }
-
-    /// Material produced when water meets magma.
-    pub(crate) fn obsidian(&self) -> Option<u16> {
-        self.materials
-            .iter()
-            .position(|m| m.name == "obsidian")
-            .and_then(|i| u16::try_from(i).ok())
-    }
-
-    pub(crate) fn aquifer_material(&self) -> Option<u16> {
-        self.materials
-            .iter()
-            .position(|m| m.aquifer)
-            .and_then(|i| u16::try_from(i).ok())
     }
 
     pub(crate) fn starting_food(&self) -> u32 {
@@ -421,16 +333,6 @@ impl FortressConfig {
         }
         hash.write_u32(u32::from(p.drown_ticks));
         // Sleeping is excluded: it is proven not to change behavior.
-        hash.write_usize(self.materials.len());
-        for m in &self.materials {
-            hash.write_bytes(m.name.as_bytes());
-            hash.write_u8(0);
-            hash.write_u32(m.dig_ticks);
-            hash.write_bool(m.ore);
-            hash.write_bool(m.aquifer);
-            hash.write_bool(m.layer);
-            hash.write_u32(m.conductivity as u32);
-            hash.write_u32(m.heat_capacity as u32);
-        }
+        // Content enters through its fingerprint, see `FortressSim::fingerprint`.
     }
 }
