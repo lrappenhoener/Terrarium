@@ -531,7 +531,7 @@ impl FortressSim {
                 if let Some(&tile) = self.world.get(p)
                     && tile.kind != TileKind::Solid
                 {
-                    let blocked = self.impassable_fluid(fluid) || self.too_hot(p);
+                    let blocked = self.walk_blocked(p, tile, fluid);
                     if tile.impassable() != blocked {
                         self.scratch
                             .fluid_tiles
@@ -601,10 +601,35 @@ impl FortressSim {
             self.fluid_active.wake_around(chunk);
         }
         if let Some(&tile) = self.world.get(p) {
-            let blocked = self.impassable_fluid(remaining) || self.too_hot(p);
+            let blocked = self.walk_blocked(p, tile, remaining);
             if tile.kind != TileKind::Solid && tile.impassable() != blocked {
                 self.world.set(p, tile.with_impassable(blocked));
             }
         }
     }
 }
+
+impl FortressSim {
+    /// The impassable marker with hysteresis, so a level or temperature hovering at
+    /// a threshold does not toggle the topology every tick: the marker is set at the
+    /// threshold and kept until the cause falls clearly below it.
+    pub(crate) fn walk_blocked(&self, p: Pos3, tile: Tile, fluid: u8) -> bool {
+        let physics = &self.config.physics;
+        let fluid_level = level(fluid);
+        let threshold = if is_magma(fluid) {
+            physics.magma_impassable_at
+        } else {
+            physics.water_impassable_at
+        };
+        let temperature = self.temperature(p);
+        let high = fluid_level >= threshold || temperature >= physics.heat_damage_at;
+        let keep = fluid_level + 1 >= threshold.max(1)
+            || temperature >= physics.heat_damage_at - HEAT_HYSTERESIS;
+        high || (tile.impassable()
+            && keep
+            && (fluid_level > 0 || temperature >= physics.heat_damage_at - HEAT_HYSTERESIS))
+    }
+}
+
+/// Degrees below the damage threshold at which hot tiles become passable again.
+const HEAT_HYSTERESIS: i32 = 10;

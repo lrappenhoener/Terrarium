@@ -298,8 +298,7 @@ impl FortressSim {
                             if let Some(&tile) = self.world.get(p)
                                 && tile.kind != TileKind::Solid
                             {
-                                let blocked =
-                                    self.impassable_fluid(self.fluid_at(p)) || self.too_hot(p);
+                                let blocked = self.walk_blocked(p, tile, self.fluid_at(p));
                                 if tile.impassable() != blocked {
                                     self.scratch
                                         .fluid_tiles

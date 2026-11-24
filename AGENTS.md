@@ -38,6 +38,10 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Kachel-Änderungen werden nur gesammelt und am Phasenende in Positionsreihenfolge angewendet. Danach werden alle abgeleiteten Strukturen über die Änderungsverfolgung der Chunks aktualisiert.
 - Erreichbarkeit vor Pfadsuche: Kein Job und kein Ziel wird ohne vorherigen `reachable`-Check gesucht. Unerreichbare Jobs werden nicht zugeteilt.
 - Unterschiedliche Entitätsarten verwenden typisierte IDs (`TypedId<M>`). Job-IDs sind stabile, fortlaufende Zähler und werden nie wiederverwendet.
+- Physiksysteme laufen über aktive Mengen (`ActiveChunkSet`, gepoolte Puffer). Schlafen ist eine reine Optimierung und durch einen Pflichttest (an/aus → identische Hashes in jedem Tick) als verhaltensneutral nachgewiesen. Alles, was im selben Tick schlafende Chunks verändert (Quellen, Kachel-Änderungen), weckt sie vor der Simulation.
+- Erhaltungsgrößen (Flüssigkeiten, Energie) haben Bilanzzähler und eine Invariante, die in jedem Tick geprüft werden kann.
+- Physik beeinflusst die Topologie nur über definierte Schwellen (Markierung „unpassierbar“), damit Erreichbarkeit und Weg-Caches selten aktualisiert werden.
+- Jede Physik-Aufgabe ist pro Tick begrenzt und wird über eine deterministische Warteschlange (`BudgetQueue`) fortgesetzt. Physikpuffer kommen aus vorreservierten Pools; keine Allokationen im Step.
 
 ## Runner-Schnittstelle
 

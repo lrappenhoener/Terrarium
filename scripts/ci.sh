@@ -43,6 +43,12 @@ grep -Fx 'Save/Load OK (2 Roundtrips)' "$scratch/fortress.txt"
 "${runner[@]}" --game fortress --ticks 2000 --commands "$scenario" --save-snapshot-at 2000 --snapshot-dir "$scratch/snaps"
 cargo run -q -p fortress-sim --example ascii -- "$scratch/snaps/fortress-seed42-t2000.snap" 2 | grep -F 'level z=2 tick=2000'
 
+for name in flood magma cavein; do
+    "${runner[@]}" --game fortress --ticks 20000 --commands "games/fortress-sim/data/scenario_$name.toml" \
+        --verify-determinism --verify-save-load --profile-phases --worst-ticks 10 \
+        --max-step-allocs 0 --budget-p99-us 10000
+done
+
 cargo build -p fortress-viewer
 cargo test -p fortress-viewer
 

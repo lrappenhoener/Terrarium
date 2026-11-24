@@ -186,7 +186,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x3aad219010470762;
+const GOLDEN_ASTAR: u64 = 0x6eccbc989aa504b0;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -471,11 +471,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v3-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x4ea723f7ec2598fb);
+    assert_eq!(sim.state_hash(), 0x7eca89da59972239);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x6ce151a1a75ddc13);
+    assert_eq!(sim.state_hash(), 0x4a2b634c2f3e3429);
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x131c03fa8d15a4e6;
+const GOLDEN_HIERARCHICAL: u64 = 0xfa068482edbf7def;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -802,9 +802,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0xc571a301c1e90c84;
-const GOLDEN_MAGMA: u64 = 0x12841d60da9dadaf;
-const GOLDEN_CAVEIN: u64 = 0x9e475334c72c97eb;
+const GOLDEN_FLOOD: u64 = 0xc961da72edd69363;
+const GOLDEN_MAGMA: u64 = 0x89290525a6c6150a;
+const GOLDEN_CAVEIN: u64 = 0xd0de6349237be0be;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
