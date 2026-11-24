@@ -20,10 +20,39 @@ fn scenario() -> Vec<(u64, Vec<FortressCommand>)> {
 
 #[test]
 fn phases_do_not_allocate_after_warmup() {
-    let schedule = scenario_file("scenario_magma.toml");
+    for (name, ticks) in [
+        ("scenario_magma.toml", 6000u64),
+        ("scenario_dig_in.toml", 3200),
+        ("scenario_industry.toml", 6000),
+    ] {
+        phases_do_not_allocate_in(name, ticks);
+    }
+}
+
+#[test]
+fn loaded_simulations_keep_their_reserved_buffers() {
+    let schedule = scenario_file("scenario_dig_in.toml");
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    run_with_scenario(&mut sim, &schedule, 500, |_| {});
+    let mut sim = roundtrip(&sim);
+    for tick in 500..3200u64 {
+        let commands: Vec<FortressCommand> = schedule
+            .iter()
+            .find(|(t, _)| *t == tick)
+            .map_or(Vec::new(), |(_, c)| c.clone());
+        let n = allocation_counter::measure(|| sim.step(&commands)).count_total;
+        assert!(
+            tick < 510 || n == 0,
+            "tick {tick}: {n} allocations after loading"
+        );
+    }
+}
+
+fn phases_do_not_allocate_in(name: &str, ticks: u64) {
+    let schedule = scenario_file(name);
     let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
     let mut worst: Vec<(&str, u64, u64)> = Vec::new();
-    for tick in 0..6000u64 {
+    for tick in 0..ticks {
         let commands: &[FortressCommand] = schedule
             .iter()
             .find(|(t, _)| *t == tick)
@@ -57,7 +86,7 @@ fn phases_do_not_allocate_after_warmup() {
         sim.tick += 1;
     }
     worst.truncate(20);
-    assert!(worst.is_empty(), "{worst:?}");
+    assert!(worst.is_empty(), "{name}: {worst:?}");
 }
 
 fn run_with_scenario(

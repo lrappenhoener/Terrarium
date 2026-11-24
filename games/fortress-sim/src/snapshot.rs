@@ -294,10 +294,11 @@ impl FortressSim {
         {
             return Err(fail("invalid stockpile zones"));
         }
-        sim.slot_items = vec![0; state.stockpiles.len()];
+        // Extend the reserved buffers so later inserts do not allocate in a step.
+        sim.slot_items.resize(state.stockpiles.len(), 0);
         sim.stockpiles.extend(state.stockpiles);
-        sim.slot_zone = state.slot_zone;
-        sim.zones = state.zones;
+        sim.slot_zone.extend(state.slot_zone);
+        sim.zones.extend(state.zones);
         sim.next_zone = state.next_zone;
         if state.orders.windows(2).any(|pair| pair[0].id >= pair[1].id)
             || state.orders.iter().any(|o| o.id >= state.next_order)
@@ -305,7 +306,7 @@ impl FortressSim {
         {
             return Err(fail("work orders must ascend by ID below the next ID"));
         }
-        sim.orders = state.orders;
+        sim.orders.extend(state.orders);
         sim.next_order = state.next_order;
         if state
             .residents
@@ -365,7 +366,7 @@ impl FortressSim {
         {
             return Err(fail("farm plots must ascend by position"));
         }
-        sim.farms = state.farms;
+        sim.farms.extend(state.farms);
         if state
             .workshops
             .windows(2)
@@ -375,7 +376,7 @@ impl FortressSim {
         {
             return Err(fail("workshops must ascend by ID below the next ID"));
         }
-        sim.workshops = state.workshops;
+        sim.workshops.extend(state.workshops);
         sim.next_workshop = state.next_workshop;
         sim.rebuild_item_index();
         let (w, d) = (sim.config.world_size_xy, sim.config.world_depth);
