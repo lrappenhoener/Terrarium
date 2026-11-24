@@ -16,6 +16,10 @@ pub struct Materials {
     pub ore: Vec<bool>,
     /// Category ID per item kind.
     pub item_categories: Vec<String>,
+    /// Per plant kind: whether it is a tree.
+    pub plant_trees: Vec<bool>,
+    pub workshop_names: Vec<String>,
+    pub workshop_sizes: Vec<i32>,
 }
 
 impl Materials {
@@ -46,6 +50,7 @@ impl Materials {
 }
 
 pub struct Overlays {
+    pub plants: bool,
     pub jobs: bool,
     pub path: bool,
     pub regions: bool,
@@ -58,6 +63,7 @@ pub struct Overlays {
 impl Overlays {
     pub fn toggle(&mut self, overlay: Overlay) {
         let flag = match overlay {
+            Overlay::Plants => &mut self.plants,
             Overlay::Jobs => &mut self.jobs,
             Overlay::Path => &mut self.path,
             Overlay::Regions => &mut self.regions,
@@ -275,6 +281,72 @@ pub fn draw_world(
         if p.z == z {
             let (sx, sy) = camera.tile_to_screen(p.x as f32, p.y as f32, screen);
             draw_rectangle(sx, sy, s, s, STOCKPILE);
+        }
+    }
+    for w in &frame.workshops {
+        if w.pos.z != z {
+            continue;
+        }
+        let size = materials
+            .workshop_sizes
+            .get(usize::from(w.kind))
+            .copied()
+            .unwrap_or(1) as f32;
+        let (sx, sy) = camera.tile_to_screen(w.pos.x as f32, w.pos.y as f32, screen);
+        let color = if w.built {
+            Color::new(0.75, 0.45, 0.9, 0.35)
+        } else {
+            Color::new(0.75, 0.45, 0.9, 0.12)
+        };
+        draw_rectangle(sx, sy, size * s, size * s, color);
+        draw_rectangle_lines(
+            sx,
+            sy,
+            size * s,
+            size * s,
+            2.0,
+            Color::new(0.8, 0.5, 1.0, 0.9),
+        );
+        if s >= 10.0 {
+            let name = materials
+                .workshop_names
+                .get(usize::from(w.kind))
+                .map_or("?", String::as_str);
+            draw_text(name, sx + 2.0, sy + s * 0.8, s.min(18.0), WHITE);
+        }
+    }
+    if overlays.plants {
+        for plot in &frame.farms {
+            if plot.pos.z == z {
+                let (sx, sy) = camera.tile_to_screen(plot.pos.x as f32, plot.pos.y as f32, screen);
+                draw_rectangle_lines(
+                    sx + 1.0,
+                    sy + 1.0,
+                    s - 2.0,
+                    s - 2.0,
+                    1.5,
+                    Color::from_rgba(150, 100, 50, 230),
+                );
+            }
+        }
+        for &(p, kind, _, ripe) in &frame.plants {
+            if p.z != z {
+                continue;
+            }
+            let (sx, sy) = camera.tile_to_screen(p.x as f32 + 0.5, p.y as f32 + 0.5, screen);
+            let tree = materials
+                .plant_trees
+                .get(usize::from(kind))
+                .copied()
+                .unwrap_or(false);
+            let (radius, color) = if tree {
+                (s * 0.42, Color::from_rgba(30, 110, 40, 230))
+            } else if ripe {
+                (s * 0.3, Color::from_rgba(220, 200, 60, 240))
+            } else {
+                (s * 0.22, Color::from_rgba(110, 200, 90, 230))
+            };
+            draw_circle(sx, sy, radius, color);
         }
     }
     if overlays.regions

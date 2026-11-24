@@ -4,14 +4,43 @@
 use fortress_sim::{BuildKind, DigMode, FortressCommand};
 use sim_core::space::Pos3;
 
+/// Content names the tools need to build commands; loaded once at startup.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Names {
+    pub workshops: Vec<String>,
+    /// Plants that grow on farm plots (no trees).
+    pub crops: Vec<String>,
+}
+
+impl Names {
+    pub fn from_content(content: &fortress_sim::GameContent) -> Self {
+        Self {
+            workshops: content.ids.workshops.clone(),
+            crops: content
+                .ids
+                .plants
+                .iter()
+                .zip(&content.plants)
+                .filter(|(_, p)| !p.tree)
+                .map(|(id, _)| id.clone())
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Dig(DigMode),
     Stockpile,
     Build(BuildKind),
-    /// Removes designations and stockpiles in the selection.
+    /// Removes designations, stockpiles, farms and workshops in the selection.
     Cancel,
     Inspect,
+    /// Places the workshop kind with this index at the clicked corner.
+    Workshop(usize),
+    /// Farm plots for the crop with this index.
+    Farm(usize),
+    Fell,
 }
 
 impl Tool {
@@ -22,12 +51,28 @@ impl Tool {
             Self::Build(kind) => format!("Bauen ({kind:?})"),
             Self::Cancel => "Aufheben".into(),
             Self::Inspect => "Untersuchen".into(),
+            Self::Workshop(i) => format!("Werkstatt {i}"),
+            Self::Farm(i) => format!("Feld {i}"),
+            Self::Fell => "Fällen".into(),
+        }
+    }
+
+    pub fn label_with(self, names: &Names) -> String {
+        match self {
+            Self::Workshop(i) => format!(
+                "Werkstatt ({})",
+                names.workshops.get(i).map_or("?", String::as_str)
+            ),
+            Self::Farm(i) => format!("Feld ({})", names.crops.get(i).map_or("?", String::as_str)),
+            other => other.label(),
         }
     }
 
     /// Next variant of the same tool family.
-    pub fn cycle(self) -> Self {
+    pub fn cycle(self, names: &Names) -> Self {
         match self {
+            Self::Workshop(i) => Self::Workshop((i + 1) % names.workshops.len().max(1)),
+            Self::Farm(i) => Self::Farm((i + 1) % names.crops.len().max(1)),
             Self::Dig(DigMode::Dig) => Self::Dig(DigMode::StairUpDown),
             Self::Dig(DigMode::StairUpDown) => Self::Dig(DigMode::StairDown),
             Self::Dig(DigMode::StairDown) => Self::Dig(DigMode::StairUp),
@@ -64,8 +109,31 @@ impl Selection {
 pub const MAX_BUILD_TILES: usize = 4096;
 
 /// Commands of a tool applied to an inclusive box.
-pub fn commands_for(tool: Tool, low: Pos3, high: Pos3) -> Vec<FortressCommand> {
+pub fn commands_for(tool: Tool, low: Pos3, high: Pos3, names: &Names) -> Vec<FortressCommand> {
     match tool {
+        Tool::Workshop(i) => names
+            .workshops
+            .get(i)
+            .map(|kind| FortressCommand::PlaceWorkshop {
+                kind: kind.clone(),
+                pos: low,
+            })
+            .into_iter()
+            .collect(),
+        Tool::Farm(i) => names
+            .crops
+            .get(i)
+            .map(|crop| FortressCommand::DesignateFarm {
+                from: low,
+                to: high,
+                crop: crop.clone(),
+            })
+            .into_iter()
+            .collect(),
+        Tool::Fell => vec![FortressCommand::DesignateFelling {
+            from: low,
+            to: high,
+        }],
         Tool::Dig(mode) => vec![FortressCommand::DesignateDig {
             from: low,
             to: high,
@@ -134,6 +202,7 @@ impl Speed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
+    Plants,
     Jobs,
     Path,
     Regions,
@@ -178,6 +247,15 @@ pub enum Key {
     F7,
     F8,
     F9,
+    F10,
+    K,
+    H,
+    T,
+    O,
+    R,
+    X,
+    L,
+    P,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -194,6 +272,16 @@ pub enum Action {
     Overlay(Overlay),
     Save,
     Load,
+    /// Shows or hides the work order list.
+    Orders,
+    /// Adds a five-run order for the next recipe of the inspected workshop.
+    AddOrder,
+    /// Cancels the newest order.
+    CancelOrder,
+    /// Cycles the category filter of the inspected stockpile zone.
+    ZoneFilter,
+    /// Raises the priority of the inspected stockpile zone (wrapping 1..9).
+    ZonePriority,
 }
 
 /// Fixed key map, documented in `README.md`.
@@ -230,6 +318,15 @@ pub fn action_for_key(key: Key) -> Option<Action> {
         Key::F7 => Action::Overlay(Overlay::ActiveChunks),
         Key::F8 => Action::Overlay(Overlay::Support),
         Key::F9 => Action::Load,
+        Key::F10 => Action::Overlay(Overlay::Plants),
+        Key::K => Action::Tool(Tool::Workshop(0)),
+        Key::H => Action::Tool(Tool::Farm(0)),
+        Key::T => Action::Tool(Tool::Fell),
+        Key::O => Action::Orders,
+        Key::R => Action::AddOrder,
+        Key::X => Action::CancelOrder,
+        Key::L => Action::ZoneFilter,
+        Key::P => Action::ZonePriority,
     })
 }
 
@@ -254,9 +351,13 @@ mod tests {
 
     #[test]
     fn tools_map_to_existing_commands() {
+        let names = Names {
+            workshops: vec!["carpenter".into(), "forge".into()],
+            crops: vec!["barley".into()],
+        };
         let (low, high) = (Pos3::new(1, 2, 3), Pos3::new(2, 3, 4));
         assert_eq!(
-            commands_for(Tool::Dig(DigMode::StairDown), low, high),
+            commands_for(Tool::Dig(DigMode::StairDown), low, high, &names),
             [FortressCommand::DesignateDig {
                 from: low,
                 to: high,
@@ -264,20 +365,20 @@ mod tests {
             }]
         );
         assert_eq!(
-            commands_for(Tool::Stockpile, low, high),
+            commands_for(Tool::Stockpile, low, high, &names),
             [FortressCommand::DesignateStockpile {
                 from: low,
                 to: high
             }]
         );
         assert_eq!(
-            commands_for(Tool::Cancel, low, high),
+            commands_for(Tool::Cancel, low, high, &names),
             [FortressCommand::CancelDesignations {
                 from: low,
                 to: high
             }]
         );
-        let builds = commands_for(Tool::Build(BuildKind::Door), low, high);
+        let builds = commands_for(Tool::Build(BuildKind::Door), low, high, &names);
         assert_eq!(builds.len(), 8);
         assert_eq!(
             builds[0],
@@ -286,8 +387,29 @@ mod tests {
                 kind: BuildKind::Door
             }
         );
-        assert!(commands_for(Tool::Inspect, low, high).is_empty());
-        let huge = commands_for(Tool::Build(BuildKind::Wall), low, Pos3::new(100, 100, 3));
+        assert!(commands_for(Tool::Inspect, low, high, &names).is_empty());
+        let huge = commands_for(
+            Tool::Build(BuildKind::Wall),
+            low,
+            Pos3::new(100, 100, 3),
+            &names,
+        );
+        assert_eq!(
+            commands_for(Tool::Workshop(1), low, high, &names),
+            [FortressCommand::PlaceWorkshop {
+                kind: "forge".into(),
+                pos: low
+            }]
+        );
+        assert_eq!(
+            commands_for(Tool::Farm(0), low, high, &names),
+            [FortressCommand::DesignateFarm {
+                from: low,
+                to: high,
+                crop: "barley".into()
+            }]
+        );
+        assert!(commands_for(Tool::Workshop(9), low, high, &names).is_empty());
         assert_eq!(huge.len(), MAX_BUILD_TILES);
     }
 
@@ -301,13 +423,22 @@ mod tests {
         );
         assert_eq!(action_for_key(Key::Digit(9)), None);
         assert_eq!(action_for_key(Key::F5), Some(Action::Save));
+        let names = Names {
+            workshops: vec!["a".into(), "b".into()],
+            crops: vec![],
+        };
         let mut tool = Tool::Dig(DigMode::Dig);
         for _ in 0..5 {
-            tool = tool.cycle();
+            tool = tool.cycle(&names);
         }
         assert_eq!(tool, Tool::Dig(DigMode::Dig));
+        assert_eq!(Tool::Workshop(1).cycle(&names), Tool::Workshop(0));
         assert_eq!(
-            Tool::Build(BuildKind::Door).cycle(),
+            action_for_key(Key::K),
+            Some(Action::Tool(Tool::Workshop(0)))
+        );
+        assert_eq!(
+            Tool::Build(BuildKind::Door).cycle(&names),
             Tool::Build(BuildKind::Wall)
         );
         assert_eq!(Speed::X5.ticks_per_second(20.0), Some(100.0));

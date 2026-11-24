@@ -5,7 +5,7 @@ use sim_core::space::Pos3;
 
 use crate::{
     session::{Session, ViewerError},
-    tools::{Selection, Tool, commands_for},
+    tools::{Names, Selection, Tool, commands_for},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,13 +26,14 @@ pub fn run_script(
     script: &[ScriptStep],
     ticks: u64,
 ) -> Result<(), ViewerError> {
+    let names = Names::from_content(session.sim().view().content());
     let end = session.sim().view().tick() + ticks;
     while session.sim().view().tick() < end {
         let tick = session.sim().view().tick();
         for step in script.iter().filter(|step| step.tick == tick) {
             let ScriptAction::Drag { tool, from, to } = step.action;
             let (low, high) = Selection { start: from }.bounds(to.x, to.y, to.z);
-            session.queue(commands_for(tool, low, high));
+            session.queue(commands_for(tool, low, high, &names));
         }
         session.step()?;
     }

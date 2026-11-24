@@ -40,6 +40,11 @@ Weitere Argumente: `--config <toml>`, `--speed pause|1|2|5|max`, `--base-tps <n>
 | Esc | Auswahl aufheben |
 | F1 / F2 / F3 / F4 | Overlays Jobs / Pfad / Erreichbarkeits-Regionen (Debug) / Chunk-Änderungen (Debug) |
 | F6 / F7 / F8 | Overlays Temperatur-Heatmap / aktive Chunks (blau Flüssigkeit, rot Wärme) / ausstehende Stützprüfungen (einsturzgefährdet, Debug) |
+| F10 | Overlay Felder und Bäume (Standard an): Bäume dunkelgrün, Feldfrüchte hellgrün, reif gelb, Feldparzellen braun umrandet |
+| K / H / T | Werkzeuge Werkstatt platzieren (Klick setzt die Ecke) / Feld anlegen / Bäume fällen; M wechselt Werkstattart bzw. Feldfrucht |
+| O | Auftragsliste ein/aus |
+| R / X | Auftrag (5 ×) für das nächste Rezept der untersuchten Werkstatt / neuesten Auftrag aufheben |
+| L / P | Kategoriefilter / Priorität der untersuchten Lagerzone weiterschalten |
 | F5 / F9 | Speichern / Laden (`sessions/quicksave.snap`) |
 | Strg+Q | Beenden |
 
@@ -54,3 +59,5 @@ Autosave schreibt alle 6.000 Ticks (5 Minuten bei 1×) `sessions/<sitzung>-autos
 - Der UI-Thread hält eine Spiegelkopie der Welt, aktualisiert nur geänderte Chunks und zeichnet unabhängig vom Tick-Takt.
 - `camera.rs`, `tools.rs`, `script.rs` sind fensterunabhängig und unit-getestet. `render.rs` und `main.rs` enthalten alles, was `macroquad` betrifft.
 - **Grafikbibliothek:** `macroquad` 0.4 ohne Standard-Features (kein Audio). Gründe: kurze Kompilierzeit, einfache API, ausreichend für eine Kachelansicht. Alternativen: `bevy` (deutlich schwerer, ECS widerspricht der eigenen Datenhaltung), `wgpu` direkt (viel Eigencode), `egui`/`eframe` (gut für Panels, schwächer für Kachelgrafik).
+
+Das Untersuchen-Panel (I, Klick) zeigt auf einer Kachel Werkstatt (Art, Bauzustand, Auftrag), Lagerzone (Priorität, Filter, Behälter), Pflanzen (Wachstum) und Gegenstände mit Menge, Material, Qualität und Abnutzung samt Behälterinhalt. Werkstätten erscheinen violett mit Namen, halbtransparent solange sie im Bau sind. Beispiel: `docs/industry-tick12000-z14.png` (Industrie-Szenario, Tick 12.000).

@@ -58,6 +58,15 @@ pub struct Frame {
     /// Per chunk: fluid awake, heat active.
     pub activity: Vec<(bool, bool)>,
     pub support_pending: Vec<Pos3>,
+    /// Plants: position, content kind, growth, ripe.
+    pub plants: Vec<(Pos3, u16, u32, bool)>,
+    pub farms: Vec<fortress_sim::FarmPlot>,
+    pub workshops: Vec<fortress_sim::Workshop>,
+    pub zones: Vec<fortress_sim::Zone>,
+    /// Zone ID per stockpile tile, aligned with `stockpiles`.
+    pub stockpile_zones: Vec<u32>,
+    pub orders: Vec<fortress_sim::WorkOrder>,
+    pub season: usize,
 }
 
 #[derive(Debug, Clone, Default)]

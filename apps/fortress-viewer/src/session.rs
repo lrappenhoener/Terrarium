@@ -452,6 +452,20 @@ impl Publisher {
             view.jobs(&mut frame.jobs);
             frame.stockpiles.clear();
             frame.stockpiles.extend_from_slice(view.stockpiles());
+            frame.stockpile_zones.clear();
+            frame
+                .stockpile_zones
+                .extend_from_slice(view.stockpile_zones());
+            view.plants(&mut frame.plants);
+            frame.farms.clear();
+            frame.farms.extend_from_slice(view.farm_plots());
+            frame.workshops.clear();
+            frame.workshops.extend_from_slice(view.workshops());
+            frame.zones.clear();
+            frame.zones.extend_from_slice(view.zones());
+            frame.orders.clear();
+            frame.orders.extend_from_slice(view.orders());
+            frame.season = view.season();
             match self.selected {
                 Some(id) => view.path(id, &mut frame.selected_path),
                 None => frame.selected_path.clear(),

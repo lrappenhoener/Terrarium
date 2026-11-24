@@ -9,7 +9,7 @@ use fortress_viewer::{
     camera::Camera,
     frame::{Frame, Mailbox, Mirror},
     session::{Control, RunSummary, Session, SessionConfig, spawn},
-    tools::{Action, Key, Selection, Speed, Tool, action_for_key, commands_for},
+    tools::{Action, Key, Names, Selection, Speed, Tool, action_for_key, commands_for},
 };
 use macroquad::{
     prelude::*,
@@ -196,10 +196,22 @@ const KEYS: [(KeyCode, Key); 28] = [
     (KeyCode::F5, Key::F5),
     (KeyCode::F9, Key::F9),
 ];
-const MORE_KEYS: [(KeyCode, Key); 3] = [
+const MORE_KEYS: [(KeyCode, Key); 15] = [
     (KeyCode::F2, Key::F2),
     (KeyCode::F3, Key::F3),
     (KeyCode::F4, Key::F4),
+    (KeyCode::F6, Key::F6),
+    (KeyCode::F7, Key::F7),
+    (KeyCode::F8, Key::F8),
+    (KeyCode::F10, Key::F10),
+    (KeyCode::K, Key::K),
+    (KeyCode::H, Key::H),
+    (KeyCode::T, Key::T),
+    (KeyCode::O, Key::O),
+    (KeyCode::R, Key::R),
+    (KeyCode::X, Key::X),
+    (KeyCode::L, Key::L),
+    (KeyCode::P, Key::P),
 ];
 
 fn print_summary(summary: &RunSummary, headless_ticks: u64) {
@@ -268,7 +280,25 @@ async fn main() {
         item_categories: (0..view.content().items.len() as u16)
             .map(|k| view.item_category(fortress_sim::ItemKind(k)).to_owned())
             .collect(),
+        plant_trees: view.content().plants.iter().map(|p| p.tree).collect(),
+        workshop_names: view.content().ids.workshops.clone(),
+        workshop_sizes: view.content().workshops.iter().map(|w| w.size).collect(),
     };
+    let content = view.content();
+    let names = Names::from_content(content);
+    let recipes: Vec<(String, u16)> = content
+        .ids
+        .recipes
+        .iter()
+        .zip(&content.recipes)
+        .map(|(id, r)| (id.clone(), r.workshop))
+        .collect();
+    let item_names = content.ids.items.clone();
+    let plant_names = content.ids.plants.clone();
+    let category_names = content.ids.categories.clone();
+    let mut show_orders = false;
+    let mut order_cursor = 0usize;
+    let mut filter_cursor = 0usize;
     let mut mirror = Mirror::new(dims, view.generated_tiles().unwrap_or_default());
     let mut residents = Vec::new();
     view.residents(&mut residents);
@@ -301,6 +331,7 @@ async fn main() {
     let mut selected: Option<u64> = None;
     let mut following = false;
     let mut overlays = Overlays {
+        plants: true,
         jobs: true,
         path: true,
         regions: false,
@@ -397,7 +428,84 @@ async fn main() {
                     let _ = control.send(Control::Speed(new));
                 }
                 Action::Tool(new) => tool = new,
-                Action::CycleTool => tool = tool.cycle(),
+                Action::CycleTool => tool = tool.cycle(&names),
+                Action::Orders => show_orders = !show_orders,
+                Action::AddOrder => {
+                    let workshop = inspected_tile.and_then(|p| workshop_at(&frame, &materials, p));
+                    match workshop {
+                        Some(w) => {
+                            let options: Vec<&String> = recipes
+                                .iter()
+                                .filter(|(_, kind)| *kind == w.kind)
+                                .map(|(id, _)| id)
+                                .collect();
+                            if let Some(recipe) = options.get(order_cursor % options.len().max(1)) {
+                                order_cursor += 1;
+                                messages
+                                    .push(format!("Auftrag: 5 × {recipe} in Werkstatt {}", w.id));
+                                let _ = control.send(Control::Commands(vec![
+                                    fortress_sim::FortressCommand::AddWorkOrder {
+                                        workshop: Some(w.id),
+                                        recipe: (*recipe).clone(),
+                                        amount: 5,
+                                        condition: fortress_sim::OrderCondition::Times,
+                                    },
+                                ]));
+                            }
+                        }
+                        None => messages.push("Erst eine Werkstatt untersuchen (I, Klick)".into()),
+                    }
+                }
+                Action::CancelOrder => {
+                    if let Some(order) = frame.orders.last() {
+                        messages.push(format!("Auftrag {} aufgehoben", order.id));
+                        let _ = control.send(Control::Commands(vec![
+                            fortress_sim::FortressCommand::CancelWorkOrder { order: order.id },
+                        ]));
+                    }
+                }
+                Action::ZoneFilter | Action::ZonePriority => {
+                    let zone = inspected_tile.and_then(|p| zone_at(&frame, p));
+                    match zone {
+                        Some(z) => {
+                            let (categories, priority) = if action == Action::ZoneFilter {
+                                filter_cursor = (filter_cursor + 1) % (category_names.len() + 1);
+                                let categories = match filter_cursor {
+                                    0 => Vec::new(),
+                                    k => vec![category_names[k - 1].clone()],
+                                };
+                                (categories, z.priority)
+                            } else {
+                                (zone_categories(&z, &category_names), z.priority % 9 + 1)
+                            };
+                            messages.push(format!(
+                                "Zone {}: Filter {} Priorität {priority}",
+                                z.id,
+                                if categories.is_empty() {
+                                    "alle".into()
+                                } else {
+                                    categories.join(",")
+                                }
+                            ));
+                            let _ = control.send(Control::Commands(vec![
+                                fortress_sim::FortressCommand::ConfigureStockpile {
+                                    zone: z.id,
+                                    categories,
+                                    materials: z
+                                        .materials()
+                                        .iter()
+                                        .filter_map(|&m| {
+                                            materials.names.get(usize::from(m)).cloned()
+                                        })
+                                        .collect(),
+                                    priority,
+                                    containers: z.containers,
+                                },
+                            ]));
+                        }
+                        None => messages.push("Erst eine Lagerzone untersuchen (I, Klick)".into()),
+                    }
+                }
                 Action::Follow => following = selected.is_some(),
                 Action::Deselect => {
                     selection = None;
@@ -469,7 +577,7 @@ async fn main() {
                     description = None;
                     inspected_tile = Some(clicked);
                 } else {
-                    let commands = commands_for(tool, low, high);
+                    let commands = commands_for(tool, low, high, &names);
                     if !commands.is_empty() {
                         let _ = control.send(Control::Commands(commands));
                     }
@@ -502,8 +610,12 @@ async fn main() {
                 camera.level, stats.residents, stats.items, stats.open_jobs
             ),
             format!(
-                "Werkzeug: {} | Overlays: Jobs {} Pfad {} Regionen {} Heatmap {}",
-                tool.label(),
+                "Werkzeug: {} | Jahreszeit {} | Overlays: Jobs {} Pfad {} Regionen {} Heatmap {}",
+                tool.label_with(&names),
+                fortress_sim::content::SEASONS
+                    .get(frame.season)
+                    .copied()
+                    .unwrap_or("?"),
                 overlays.jobs as u8,
                 overlays.path as u8,
                 overlays.regions as u8,
@@ -526,6 +638,13 @@ async fn main() {
                         .map_or("", String::as_str)
                 ));
             }
+            lines.extend(tile_details(
+                &frame,
+                &materials,
+                &item_names,
+                &plant_names,
+                p,
+            ));
             if let Some(fields) = &description {
                 lines.extend(fields.iter().map(|(k, v)| format!("{k}: {v}")));
             }
@@ -535,6 +654,23 @@ async fn main() {
             draw_panel(&lines, screen.0 - 360.0, 8.0);
         }
 
+        if show_orders {
+            let mut lines = vec!["Aufträge (O schließt, R fügt hinzu, X hebt auf)".to_string()];
+            for o in &frame.orders {
+                let recipe = recipes
+                    .get(usize::from(o.recipe))
+                    .map_or("?", |(id, _)| id.as_str());
+                lines.push(format!(
+                    "#{} {recipe} {:?} {}/{} Werkstatt {}",
+                    o.id,
+                    o.condition,
+                    o.done,
+                    o.amount,
+                    o.workshop.map_or("alle".into(), |w| w.to_string())
+                ));
+            }
+            draw_panel(&lines, 8.0, 140.0);
+        }
         if let Some((tick, path)) = &args.screenshot
             && !screenshot_done
             && frame.stats.tick >= *tick
@@ -565,4 +701,109 @@ async fn main() {
         Ok(summary) => print_summary(&summary, frame.stats.tick),
         Err(_) => eprintln!("Fehler: Simulations-Thread abgebrochen"),
     }
+}
+
+fn workshop_at(
+    frame: &fortress_viewer::frame::Frame,
+    materials: &Materials,
+    p: Pos3,
+) -> Option<fortress_sim::Workshop> {
+    frame.workshops.iter().copied().find(|w| {
+        let size = materials
+            .workshop_sizes
+            .get(usize::from(w.kind))
+            .copied()
+            .unwrap_or(1);
+        p.z == w.pos.z
+            && (w.pos.x..w.pos.x + size).contains(&p.x)
+            && (w.pos.y..w.pos.y + size).contains(&p.y)
+    })
+}
+
+fn zone_at(frame: &fortress_viewer::frame::Frame, p: Pos3) -> Option<fortress_sim::Zone> {
+    let slot = frame.stockpiles.binary_search(&p).ok()?;
+    let id = *frame.stockpile_zones.get(slot)?;
+    frame.zones.iter().copied().find(|z| z.id == id)
+}
+
+/// Category IDs whose bits are set in a zone filter; none for all categories.
+fn zone_categories(zone: &fortress_sim::Zone, names: &[String]) -> Vec<String> {
+    if zone.categories == u64::MAX {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i < 64 && zone.categories & (1 << i) != 0)
+        .map(|(_, n)| n.clone())
+        .collect()
+}
+
+/// Panel lines for workshops, zones, plants and items on a tile, with container contents.
+fn tile_details(
+    frame: &fortress_viewer::frame::Frame,
+    materials: &Materials,
+    item_names: &[String],
+    plant_names: &[String],
+    p: Pos3,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(w) = workshop_at(frame, materials, p) {
+        let order = w
+            .order
+            .and_then(|o| frame.orders.iter().find(|x| x.id == o));
+        lines.push(format!(
+            "Werkstatt {} {} {} Auftrag {}",
+            w.id,
+            materials
+                .workshop_names
+                .get(usize::from(w.kind))
+                .map_or("?", String::as_str),
+            if w.built { "gebaut" } else { "im Bau" },
+            order.map_or("-".into(), |o| format!("#{}", o.id))
+        ));
+    }
+    if let Some(z) = zone_at(frame, p) {
+        lines.push(format!(
+            "Lagerzone {} Priorität {} Behälter {} Filter {:#x}",
+            z.id, z.priority, z.containers, z.categories
+        ));
+    }
+    for &(at, kind, growth, ripe) in &frame.plants {
+        if at == p {
+            lines.push(format!(
+                "Pflanze {} Wachstum {growth}{}",
+                plant_names
+                    .get(usize::from(kind))
+                    .map_or("?", String::as_str),
+                if ripe { " (reif)" } else { "" }
+            ));
+        }
+    }
+    let describe = |item: &fortress_sim::view::ItemView| {
+        format!(
+            "{} × {} aus {} Qualität {} Abnutzung {}",
+            item.quantity,
+            item_names
+                .get(usize::from(item.kind.0))
+                .map_or("?", String::as_str),
+            materials
+                .names
+                .get(usize::from(item.material))
+                .map_or("?", String::as_str),
+            item.quality,
+            item.wear
+        )
+    };
+    for item in frame
+        .items
+        .iter()
+        .filter(|i| i.pos == p && i.container.is_none() && i.carried_by.is_none())
+    {
+        lines.push(describe(item));
+        for inner in frame.items.iter().filter(|i| i.container == Some(item.id)) {
+            lines.push(format!("  enthält {}", describe(inner)));
+        }
+    }
+    lines
 }
