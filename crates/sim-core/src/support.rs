@@ -214,8 +214,6 @@ impl SupportChecker {
         out.clear();
         self.next_generation();
         let mut queue = std::mem::replace(&mut self.queue, BudgetQueue::with_capacity(0));
-        let mut found = std::mem::take(&mut self.visited);
-        found.clear();
         let mut collected = std::mem::take(out);
         queue.process(budget, |seed, _| {
             let tries = self
@@ -256,7 +254,6 @@ impl SupportChecker {
         collected.sort_unstable();
         collected.dedup();
         *out = collected;
-        self.visited = found;
         self.queue = queue;
     }
 

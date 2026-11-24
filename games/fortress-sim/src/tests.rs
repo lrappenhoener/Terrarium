@@ -20,7 +20,7 @@ fn scenario() -> Vec<(u64, Vec<FortressCommand>)> {
 
 #[test]
 fn phases_do_not_allocate_after_warmup() {
-    let schedule = scenario();
+    let schedule = scenario_file("scenario_magma.toml");
     let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
     let mut worst: Vec<(&str, u64, u64)> = Vec::new();
     for tick in 0..6000u64 {
@@ -40,11 +40,16 @@ fn phases_do_not_allocate_after_warmup() {
             }
         };
         count("connectivity", &mut sim, FortressSim::update_connectivity);
+        count("hazards", &mut sim, FortressSim::hazards);
         count("needs", &mut sim, FortressSim::needs);
         count("job_assign", &mut sim, FortressSim::job_assign);
         count("path", &mut sim, FortressSim::path);
         count("move", &mut sim, FortressSim::movement);
         count("work", &mut sim, FortressSim::work);
+        count("fluids", &mut sim, FortressSim::fluids);
+        count("temperature", &mut sim, FortressSim::temperature_step);
+        count("support", &mut sim, FortressSim::support_step);
+        count("collapse", &mut sim, FortressSim::collapse_step);
         count("lifecycle", &mut sim, FortressSim::lifecycle);
         count("environment", &mut sim, FortressSim::environment);
         sim.tick += 1;
@@ -715,4 +720,145 @@ fn an_undermined_slab_caves_in_and_becomes_stone() {
         sim.icols.len() >= before.unwrap(),
         "fallen tiles became stones"
     );
+}
+
+fn shuffled_matches_ordered(name: &str, ticks: u64) -> Vec<u64> {
+    let schedule = scenario_file(name);
+    let mut ordered = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut shuffled = FortressSim::new(
+        42,
+        FortressConfig {
+            debug_shuffle_slots: true,
+            ..FortressConfig::default()
+        },
+    )
+    .unwrap();
+    let mut hashes = Vec::new();
+    run_with_scenario(&mut ordered, &schedule, ticks, |sim| {
+        hashes.push(sim.state_hash())
+    });
+    let mut index = 0;
+    run_with_scenario(&mut shuffled, &schedule, ticks, |sim| {
+        assert_eq!(
+            sim.state_hash(),
+            hashes[index],
+            "{name} tick {}",
+            sim.tick()
+        );
+        index += 1;
+    });
+    hashes
+}
+
+/// Roundtrips whenever chunks fall asleep or wake, or a support check is pending.
+fn save_load_through_transitions(name: &str, ticks: u64) -> usize {
+    let schedule = scenario_file(name);
+    let mut continuous = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut interrupted = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut awake = 0;
+    let mut roundtrips = 0;
+    for _ in 0..ticks {
+        let tick = continuous.tick();
+        let commands = schedule
+            .iter()
+            .find(|(t, _)| *t == tick)
+            .map_or(&[][..], |(_, c)| c.as_slice());
+        continuous.step(commands);
+        interrupted.step(commands);
+        let now = interrupted.fluid_active.awake_count();
+        let transition = now != awake
+            || !interrupted.support.is_empty()
+            || interrupted.counters.collapses > 0 && roundtrips < 40;
+        awake = now;
+        if transition && roundtrips < 60 {
+            interrupted = roundtrip(&interrupted);
+            roundtrips += 1;
+        }
+        assert_eq!(
+            continuous.state_hash(),
+            interrupted.state_hash(),
+            "{name} tick {}",
+            continuous.tick()
+        );
+    }
+    roundtrips
+}
+
+#[test]
+fn flood_is_deterministic_shuffle_neutral_and_golden() {
+    let hashes = shuffled_matches_ordered("scenario_flood.toml", 2500);
+    assert_eq!(hashes[2499], GOLDEN_FLOOD, "{:#018x}", hashes[2499]);
+}
+
+#[test]
+fn magma_is_deterministic_shuffle_neutral_and_golden() {
+    let hashes = shuffled_matches_ordered("scenario_magma.toml", 2500);
+    assert_eq!(hashes[2499], GOLDEN_MAGMA, "{:#018x}", hashes[2499]);
+}
+
+#[test]
+fn cavein_is_deterministic_shuffle_neutral_and_golden() {
+    let hashes = shuffled_matches_ordered("scenario_cavein.toml", 1500);
+    assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
+}
+
+const GOLDEN_FLOOD: u64 = 0xc571a301c1e90c84;
+const GOLDEN_MAGMA: u64 = 0x12841d60da9dadaf;
+const GOLDEN_CAVEIN: u64 = 0x9e475334c72c97eb;
+
+#[test]
+fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
+    assert!(save_load_through_transitions("scenario_magma.toml", 2500) > 20);
+}
+
+#[test]
+fn save_load_survives_a_cave_in() {
+    assert!(save_load_through_transitions("scenario_cavein.toml", 1300) > 5);
+}
+
+#[test]
+fn a_flooded_room_hides_jobs_until_it_is_pumped_out() {
+    let schedule = scenario_file("scenario_flood.toml");
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    run_with_scenario(&mut sim, &schedule, 5000, |_| {});
+    let site = Pos3::new(52, 48, 2);
+    assert!(
+        crate::fluids::level(sim.fluid_at(site)) >= 4,
+        "the room is flooded"
+    );
+    let target = Pos3::new(53, 48, 2);
+    sim.step(&[FortressCommand::DesignateDig {
+        from: target,
+        to: target,
+        mode: DigMode::Dig,
+    }]);
+    let job = sim.jobs.iter().find(|j| j.pos == target).unwrap().id;
+    for _ in 0..300 {
+        sim.step(&[]);
+        assert_eq!(
+            sim.jobs.get(job).unwrap().state,
+            JobState::Open,
+            "unreachable behind water"
+        );
+    }
+    // Pump out: drain all water below the gallery, counted as a sink.
+    let mut dug = false;
+    for _ in 0..3000 {
+        let wet: Vec<Pos3> = sim
+            .fluid
+            .iter_logical()
+            .filter(|(p, f)| p.z < 10 && **f != 0 && !crate::fluids::is_magma(**f))
+            .map(|(p, _)| p)
+            .collect();
+        for p in wet {
+            sim.pump(p);
+        }
+        sim.step(&[]);
+        sim.check_invariants().unwrap();
+        if sim.world.get(target).unwrap().kind != TileKind::Solid {
+            dug = true;
+            break;
+        }
+    }
+    assert!(dug, "the job became reachable and was done after pumping");
 }

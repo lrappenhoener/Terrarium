@@ -578,6 +578,19 @@ impl FortressSim {
 }
 
 impl FortressSim {
+    /// Removes all water of a tile as a sink, like a pump, and updates its marker.
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self, p: Pos3) {
+        let fluid = self.fluid_at(p);
+        if fluid == 0 || is_magma(fluid) {
+            return;
+        }
+        let units = amount(fluid);
+        self.boil(p, 0, units);
+        self.balance.boiled -= u64::from(units);
+        self.balance.sinks[0] += u64::from(units);
+    }
+
     /// Removes boiled water, wakes its chunk and updates the impassable marker.
     pub(crate) fn boil(&mut self, p: Pos3, remaining: u8, gone: u8) {
         self.fluid
