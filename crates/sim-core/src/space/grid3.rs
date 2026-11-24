@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::state::{StateHash, StateHasher};
 
 /// A tile position. Ordering is logical: by level, then row, then column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Pos3 {
     pub x: i32,
     pub y: i32,

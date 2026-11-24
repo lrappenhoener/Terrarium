@@ -220,3 +220,16 @@ impl View<'_> {
         )
     }
 }
+
+impl View<'_> {
+    /// Tiles of the freshly generated world in logical order, to tell built walls
+    /// from natural rock. Regenerates the world; call once per session.
+    pub fn generated_tiles(&self) -> Option<Vec<Tile>> {
+        let world = crate::world::generate(self.sim.seed, &self.sim.config).ok()?;
+        Some(world.iter_logical().map(|(_, tile)| *tile).collect())
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.sim.seed
+    }
+}

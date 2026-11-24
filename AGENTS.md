@@ -6,6 +6,10 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 
 - Drei Schichten: `sim-host` und `sim-runner` stellen generische Schnittstellen ohne Domänenlogik bereit, `sim-core` enthält wiederverwendbare Simulationsbausteine, `games/*` enthält Regeln und Inhalte.
 - `sim-core` bleibt domänenneutral. Begriffe wie Bewohner, Erz oder Lager gehören in die Spiel-Crates; `sim-core` kennt nur opake Materialien, Jobs und Reservierungen.
+- Clients (Viewer, spätere Spiel-Clients) verändern den Simulationszustand nie direkt, nur über Commands. Jede Client-Sitzung zeichnet ein Replay auf; Fehler aus Spielsitzungen werden über dieses Replay im Runner reproduziert.
+- Lese-Schnittstellen (`view`-Module) sind rein lesend. Ein Pflichttest zeigt, dass sie die Hashes nicht verändern.
+- Die Simulation läuft im Client in einem eigenen Thread. Zeichnen und Eingaben dürfen den Tick-Takt nicht beeinflussen.
+- Grafiken und Assets sind nur eigene oder CC0-lizenzierte Werke, aufgelistet in `ASSETS.md` des jeweiligen Clients.
 - Externe ECS-Crates benötigen eine dokumentierte Begründung. Speicherlayout und Iterationsreihenfolge bleiben unter unserer Kontrolle.
 
 - Die Library von `sim-runner` und ihre Module kennen als Spielschnittstelle ausschließlich `sim-host`. Spielregeln und konkrete Spieltypen gehören in die Spiel-Crates.

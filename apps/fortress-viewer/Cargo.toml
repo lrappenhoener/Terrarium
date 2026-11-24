@@ -1,0 +1,20 @@
+[package]
+name = "fortress-viewer"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+fortress-sim.workspace = true
+macroquad = { version = "0.4.16", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sim-core.workspace = true
+sim-host.workspace = true
+sim-io.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+sim-runner = { path = "../../crates/sim-runner" }
+
+[lints]
+workspace = true

@@ -43,6 +43,9 @@ grep -Fx 'Save/Load OK (2 Roundtrips)' "$scratch/fortress.txt"
 "${runner[@]}" --game fortress --ticks 2000 --commands "$scenario" --save-snapshot-at 2000 --snapshot-dir "$scratch/snaps"
 cargo run -q -p fortress-sim --example ascii -- "$scratch/snaps/fortress-seed42-t2000.snap" 2 | grep -F 'level z=2 tick=2000'
 
+cargo build -p fortress-viewer
+cargo test -p fortress-viewer
+
 cargo run --profile release-checked -p sim-runner -- --game jungle --ticks 50000 \
     --verify-determinism | tee "$scratch/checked.txt"
 grep -Fx 'Tick 50000 (50000 ausgeführt)' "$scratch/checked.txt"

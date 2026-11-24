@@ -267,7 +267,9 @@ impl ReplayFile {
     /// Last tick the recording covers. Interrupted files end after their last record.
     pub fn target(&self) -> u64 {
         match &self.ending {
-            Some(Ending::Finished { .. } | Ending::Failed { .. }) => self.recorded_target,
+            // Open-ended recordings, such as client sessions, end at their closing record.
+            Some(Ending::Finished { tick, .. }) => (*tick).min(self.recorded_target),
+            Some(Ending::Failed { .. }) => self.recorded_target,
             Some(Ending::Panic { tick, .. }) => tick.saturating_add(1).min(self.recorded_target),
             Some(Ending::LimitReached { .. }) | None => self
                 .checkpoints

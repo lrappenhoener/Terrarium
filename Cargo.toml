@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sim-core", "crates/sim-host", "crates/sim-io", "crates/sim-runner", "games/dummy-sim", "games/fortress-sim", "games/jungle-sim"]
+members = ["apps/fortress-viewer", "crates/sim-core", "crates/sim-host", "crates/sim-io", "crates/sim-runner", "games/dummy-sim", "games/fortress-sim", "games/jungle-sim"]
 resolver = "3"
 
 [workspace.package]
