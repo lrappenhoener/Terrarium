@@ -49,6 +49,10 @@ for name in flood magma cavein; do
         --max-step-allocs 0 --budget-p99-us 10000
 done
 
+"${runner[@]}" --game fortress --ticks 50000 --commands games/fortress-sim/data/scenario_industry.toml \
+    --verify-determinism --verify-save-load --profile-phases --worst-ticks 10 \
+    --max-step-allocs 0 --budget-p99-us 10000
+
 cargo build -p fortress-viewer
 cargo test -p fortress-viewer
 

@@ -98,3 +98,13 @@ Diese Regeln gelten für das MVP und alle künftigen Arbeiten am Workspace.
 - Jede Änderung am Fortress-Weltgenerator erhöht `GENERATOR_VERSION` in `games/fortress-sim/src/world.rs`. Snapshots speichern den Generator-Fingerabdruck, abweichende Stände werden vor der Rekonstruktion abgelehnt. Ab Etappe 8 sind dafür Migrationen nötig.
 - Replays sind das Standardformat für Bug-Reports. Simulationsfehler möglichst zuerst als Replay oder Snapshot reproduzieren und anschließend als Regressionstest erhalten.
 - Replays werden während des Laufs als längenpräfixierte Datensätze mit Prüfsumme geschrieben und überstehen Abstürze bis zum letzten vollständigen Datensatz. Panics in `step` schließt der Runner mit einem Panic-Datensatz ab und endet mit Exit-Code 7.
+
+## Inhalte, Wirtschaft und Transport
+
+- Spielinhalte und Balancing-Werte stehen in Inhaltsdateien (`games/<spiel>/content/`), nicht im Code. Code definiert Regeln, Inhalte definieren Daten. Regeln greifen auf Inhalte nur über beim Laden aufgelöste Indizes und Rollen zu.
+- Inhalte laden unabhängig von der Dateisystem-Reihenfolge: Ebenen in fester Reihenfolge (Basis, dann Mods), Dateien nach Pfad sortiert. String-IDs gibt es nur beim Laden und an der Command-Grenze; zur Laufzeit gibt es nur dichte Indizes in ID-Reihenfolge. Inhalte enthalten keine Gleitkommazahlen.
+- Mod-Regeln: Hinzufügen ist erlaubt, Überschreiben nur explizit mit `override = true`. Der Inhalts-Fingerabdruck fließt in `content_fingerprint` und Snapshots; abweichende Inhalte werden abgelehnt.
+- Mehrere Ressourcen für einen Job werden atomar reserviert (`sim_core::jobs::GroupClaims`): alle oder keine, unabhängig von der Sammelreihenfolge.
+- Gegenstandssuchen laufen nur über den Kategorie-Index, mit Erreichbarkeitsfilter und Zellen- und Kandidatenlimit. Lineare Suchen über alle Gegenstände sind verboten, auch in Pro-Tick-Phasen; gestaffelte Arbeit besucht nur die fälligen Indizes.
+- Job-Erzeugung ist bedarfsgesteuert und gedeckelt: Transport-Jobs nur bei vorhandenem Ziel, höchstens pro Tick und offen begrenzt; keine Jobs „auf Vorrat“ für alle Gegenstände. Jobs, deren Voraussetzungen wegfallen, werden verworfen und später neu angeboten.
+- Mengen (Stapel) sind Erhaltungsgrößen: Ein Mengenbuch pro Gegenstandsart (`produziert − entfernt = lebend`) wird in jedem Tick als Invariante geprüft.
