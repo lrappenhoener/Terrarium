@@ -144,6 +144,8 @@ pub struct FortressConfig {
     pub hauls_per_tick: u32,
     /// Items within this distance of a haul join it in a bulk container.
     pub bulk_radius: u32,
+    /// Work orders are distributed to idle workshops every this many ticks.
+    pub order_interval: u64,
     /// Calendar: a season lasts `days_per_season` days of `ticks_per_day` ticks.
     pub ticks_per_day: u64,
     pub days_per_season: u64,
@@ -209,6 +211,7 @@ impl Default for FortressConfig {
             max_open_hauls: 64,
             hauls_per_tick: 16,
             bulk_radius: 12,
+            order_interval: 16,
             ticks_per_day: 1_200,
             days_per_season: 10,
             tree_density: 20,
@@ -282,6 +285,7 @@ impl FortressConfig {
             || self.max_open_hauls == 0
             || self.hauls_per_tick == 0
             || self.ticks_per_day == 0
+            || self.order_interval == 0
             || self.days_per_season == 0
             || self.tree_density > 1000
             || !(1..=1_000_000).contains(&self.max_plants)
@@ -359,6 +363,7 @@ impl FortressConfig {
             hash.write_u32(value);
         }
         for value in [
+            self.order_interval,
             self.ticks_per_day,
             self.days_per_season,
             self.plant_interval,

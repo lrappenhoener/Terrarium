@@ -70,6 +70,8 @@ pub struct Workshop {
     pub pos: Pos3,
     pub built: bool,
     pub job: Option<JobId>,
+    /// Work order of the current production job.
+    pub order: Option<u32>,
 }
 
 sim_core::state_hash_struct!(Workshop {
@@ -77,7 +79,43 @@ sim_core::state_hash_struct!(Workshop {
     kind,
     pos,
     built,
-    job
+    job,
+    order
+});
+
+/// When a work order is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderCondition {
+    /// `amount` runs.
+    Times,
+    /// Forever.
+    Repeat,
+    /// While fewer than `amount` units of the first product exist.
+    UntilStock,
+}
+
+sim_core::state_hash_enum!(OrderCondition);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkOrder {
+    /// Stable, never reused.
+    pub id: u32,
+    /// A specific workshop, or any of the recipe's kind.
+    pub workshop: Option<u32>,
+    pub recipe: u16,
+    pub amount: u32,
+    pub condition: OrderCondition,
+    /// Finished runs.
+    pub done: u32,
+}
+
+sim_core::state_hash_struct!(WorkOrder {
+    id,
+    workshop,
+    recipe,
+    amount,
+    condition,
+    done
 });
 
 /// A designated farm tile with its crop, current plant and pending job.
@@ -578,5 +616,15 @@ pub enum FortressCommand {
         materials: Vec<String>,
         priority: u8,
         containers: bool,
+    },
+    /// Production order for a recipe, optionally bound to one workshop.
+    AddWorkOrder {
+        workshop: Option<u32>,
+        recipe: String,
+        amount: u32,
+        condition: OrderCondition,
+    },
+    CancelWorkOrder {
+        order: u32,
     },
 }

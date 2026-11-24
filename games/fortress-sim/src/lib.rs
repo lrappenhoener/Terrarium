@@ -8,6 +8,7 @@ mod config;
 pub mod content;
 mod diagnostics;
 mod fluids;
+mod orders;
 mod plants;
 mod production;
 mod render;
@@ -21,7 +22,10 @@ mod world;
 pub use config::{FortressConfig, Pathfinding, PhysicsConfig, StartItems};
 pub use content::GameContent;
 pub use sim_core::space::{Pos3, Tile, TileKind};
-pub use types::{BuildKind, DigMode, FortressCommand, ItemKind, Zone};
+pub use types::{
+    BuildKind, DigMode, FarmPlot, FortressCommand, ItemKind, OrderCondition, WorkOrder, Workshop,
+    Zone,
+};
 
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
@@ -42,8 +46,8 @@ use sim_core::{
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
 use types::{
-    Death, Event, FarmPlot, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, Plant, PlantId,
-    ResKey, Resident, ResidentId, Route, RouteStatus, Skills, Task, Vitals, Workshop,
+    Death, Event, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, Plant, PlantId, ResKey,
+    Resident, ResidentId, Route, RouteStatus, Skills, Task, Vitals,
 };
 
 const DIG_PRIORITY: i32 = 5;
@@ -160,6 +164,7 @@ pub(crate) struct Diagnostics {
     pub support_last_units: u64,
     pub heat_pool_exhausted: u64,
     pub hauls_deferred: u64,
+    pub orders_waiting: u64,
     /// Aborted tasks by `Task::tag`.
     pub aborts: [u64; 11],
     pub bulk_hauls: u64,
@@ -242,6 +247,9 @@ pub struct FortressSim {
     /// Workshops in ascending ID order.
     workshops: Vec<Workshop>,
     next_workshop: u32,
+    /// Work orders in ascending ID order.
+    orders: Vec<types::WorkOrder>,
+    next_order: u32,
     fluid: ChunkedGrid3<u8>,
     fluid_active: ActiveChunkSet,
     balance: fluids::FluidBalance,
@@ -510,6 +518,8 @@ impl FortressSim {
             farms: Vec::with_capacity(config.max_farm_plots as usize),
             workshops: Vec::with_capacity(MAX_WORKSHOPS),
             next_workshop: 0,
+            orders: Vec::with_capacity(orders::MAX_ORDERS),
+            next_order: 0,
             seed,
             tick: 0,
             connectivity,
@@ -1215,6 +1225,29 @@ impl FortressSim {
                     let rejected = self.designate_stockpile(from, to);
                     self.counters.invalid_designations += rejected;
                 }
+                FortressCommand::AddWorkOrder {
+                    workshop,
+                    ref recipe,
+                    amount,
+                    condition,
+                } => {
+                    let added = GameContent::id_of(&self.content.ids.recipes, recipe)
+                        .is_some_and(|r| self.add_order(workshop, r, amount, condition));
+                    if !added {
+                        self.counters.invalid_designations += 1;
+                    }
+                }
+                FortressCommand::CancelWorkOrder { order } => {
+                    self.scratch.abort.clear();
+                    if !self.cancel_order(order) {
+                        self.counters.invalid_designations += 1;
+                    }
+                    for i in 0..self.scratch.abort.len() {
+                        let id = self.scratch.abort[i];
+                        self.abort_task(id);
+                    }
+                    self.scratch.abort.clear();
+                }
                 FortressCommand::ConfigureStockpile {
                     zone,
                     ref categories,
@@ -1517,6 +1550,9 @@ impl FortressSim {
                             .push(worker, priority, job_distance(at, pos), &keys);
                     self.scratch.group_keys = keys;
                     self.scratch.ingredients = items;
+                    if !pushed && recipe.is_some() {
+                        self.scratch.stale_hauls.push(job_id);
+                    }
                     pushed.then_some(Task::Craft {
                         job: job_id,
                         workshop,
@@ -1664,7 +1700,12 @@ impl FortressSim {
         self.scratch.outcomes = outcomes;
         for i in 0..self.scratch.stale_hauls.len() {
             let job = self.scratch.stale_hauls[i];
-            if let Some(JobKind::Haul(item)) = self
+            if matches!(
+                self.jobs.get(job).map(|j| j.data),
+                Some(JobKind::Craft { .. })
+            ) {
+                self.drop_craft_job(job);
+            } else if let Some(JobKind::Haul(item)) = self
                 .jobs
                 .get(job)
                 .filter(|j| j.state == JobState::Open)
@@ -2438,6 +2479,7 @@ impl Simulation for FortressSim {
         phase(probe, "move", || self.movement());
         phase(probe, "work", || self.work());
         phase(probe, "plants", || self.plants_step());
+        phase(probe, "orders", || self.manage_orders());
         phase(probe, "fluids", || self.fluids());
         phase(probe, "temperature", || self.temperature_step());
         phase(probe, "support", || self.support_step());

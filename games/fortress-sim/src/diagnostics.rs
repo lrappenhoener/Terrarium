@@ -158,6 +158,8 @@ impl FortressSim {
         let mut industry = StateHasher::new();
         self.workshops.state_hash(&mut industry);
         industry.write_u32(self.next_workshop);
+        self.orders.state_hash(&mut industry);
+        industry.write_u32(self.next_order);
 
         let mut plants = StateHasher::new();
         self.plants.hash_state(&mut plants);
@@ -518,6 +520,11 @@ impl FortressSim {
             if self.content.workshops.get(usize::from(w.kind)).is_none() {
                 return fail("workshop of unknown kind");
             }
+            if w.order
+                .is_some_and(|o| self.order_index(o).is_none() || w.job.is_none())
+            {
+                return fail("workshop order is missing or idle");
+            }
             if let Some(job) = w.job {
                 let matches = self.jobs.get(job).is_some_and(|j| {
                     j.data == (JobKind::Craft { workshop: w.id, recipe: match j.data { JobKind::Craft { recipe, .. } => recipe, _ => None } })
@@ -527,6 +534,15 @@ impl FortressSim {
                     return fail("workshop job is missing or does not match its state");
                 }
             }
+        }
+        if self.orders.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || self.orders.iter().any(|o| {
+                o.id >= self.next_order
+                    || self.content.recipes.get(usize::from(o.recipe)).is_none()
+                    || (o.condition == crate::types::OrderCondition::Times && o.done >= o.amount)
+            })
+        {
+            return fail("work orders are inconsistent");
         }
         if self.farms.windows(2).any(|pair| pair[0].pos >= pair[1].pos) {
             return fail("farm plots are not sorted and unique");

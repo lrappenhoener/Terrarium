@@ -248,6 +248,38 @@ impl View<'_> {
         &self.sim.zones
     }
 
+    pub fn orders(&self) -> &[crate::types::WorkOrder] {
+        &self.sim.orders
+    }
+
+    pub fn workshops(&self) -> &[crate::types::Workshop] {
+        &self.sim.workshops
+    }
+
+    /// Plants in ascending ID order: position, content kind, growth and ripeness.
+    pub fn plants(&self, out: &mut Vec<(Pos3, u16, u32, bool)>) {
+        out.clear();
+        for id in self.sim.plants.iter_by_id() {
+            if let Some(slot) = self.sim.pslot(id) {
+                out.push((
+                    self.sim.pcols.pos[slot],
+                    self.sim.pcols.kind[slot],
+                    self.sim.pcols.growth[slot],
+                    self.sim.plant_ripe(id),
+                ));
+            }
+        }
+    }
+
+    pub fn farm_plots(&self) -> &[crate::types::FarmPlot] {
+        &self.sim.farms
+    }
+
+    /// Season index 0..4: spring, summer, autumn, winter.
+    pub fn season(&self) -> usize {
+        self.sim.season()
+    }
+
     /// Remaining path of a resident, starting at its next node.
     pub fn path(&self, resident: u64, out: &mut Vec<Pos3>) {
         out.clear();

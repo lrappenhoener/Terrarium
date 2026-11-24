@@ -47,6 +47,7 @@ fn phases_do_not_allocate_after_warmup() {
         count("move", &mut sim, FortressSim::movement);
         count("work", &mut sim, FortressSim::work);
         count("plants", &mut sim, FortressSim::plants_step);
+        count("orders", &mut sim, FortressSim::manage_orders);
         count("fluids", &mut sim, FortressSim::fluids);
         count("temperature", &mut sim, FortressSim::temperature_step);
         count("support", &mut sim, FortressSim::support_step);
@@ -187,7 +188,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x780106be6aa17f6c;
+const GOLDEN_ASTAR: u64 = 0x1ab10706311d6098;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -473,11 +474,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x9cec46b8050120bd);
+    assert_eq!(sim.state_hash(), 0x1288c0cae2fece10);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0xb1380bbfd37bfe9e);
+    assert_eq!(sim.state_hash(), 0x02311118212efbb2);
 }
 
 #[test]
@@ -503,7 +504,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 420, "dug {}", sim.counters.dug);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0xd6e132c781285fde;
+const GOLDEN_HIERARCHICAL: u64 = 0xe1968af35f259901;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -815,9 +816,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0xae14ccadf0e85935;
-const GOLDEN_MAGMA: u64 = 0x169492ac999447b1;
-const GOLDEN_CAVEIN: u64 = 0x5416739e9896adcc;
+const GOLDEN_FLOOD: u64 = 0x0650245ed979caab;
+const GOLDEN_MAGMA: u64 = 0x028ad778d7195ba6;
+const GOLDEN_CAVEIN: u64 = 0xf072eb13c8418fb8;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -1486,8 +1487,21 @@ fn atomic_reservation_lets_exactly_one_workshop_start_without_deadlock() {
     let (ore, charcoal, bar) = (kind(&sim, "ore"), kind(&sim, "charcoal"), kind(&sim, "bar"));
     sim.spawn_item(Pos3::new(8, 10, 1), ore, iron_ore, 1, 0);
     sim.spawn_item(Pos3::new(8, 11, 1), charcoal, oak, 1, 0);
-    sim.add_craft_job(first, Some(smelt)).unwrap();
-    sim.add_craft_job(second, Some(smelt)).unwrap();
+    let _ = smelt;
+    sim.step(&[
+        FortressCommand::AddWorkOrder {
+            workshop: Some(first),
+            recipe: "smelt_ore".into(),
+            amount: 1,
+            condition: OrderCondition::Times,
+        },
+        FortressCommand::AddWorkOrder {
+            workshop: Some(second),
+            recipe: "smelt_ore".into(),
+            amount: 1,
+            condition: OrderCondition::Times,
+        },
+    ]);
     let crafting = |sim: &FortressSim| -> Vec<(ResidentId, u32)> {
         sim.residents
             .iter_by_id()
@@ -1523,12 +1537,12 @@ fn atomic_reservation_lets_exactly_one_workshop_start_without_deadlock() {
         done_at.is_some(),
         "the first workshop finished: no deadlock"
     );
-    let open = sim
-        .jobs
-        .iter()
-        .filter(|j| matches!(j.data, JobKind::Craft { .. }) && j.state == JobState::Open)
-        .count();
-    assert_eq!(open, 1, "the second job waits for ingredients");
+    assert_eq!(
+        sim.orders.len(),
+        1,
+        "the second order waits for ingredients"
+    );
+    assert_eq!(sim.orders[0].done, 0);
     // New ingredients let the second workshop start and finish.
     sim.spawn_item(Pos3::new(8, 10, 1), ore, iron_ore, 1, 0);
     sim.spawn_item(Pos3::new(8, 11, 1), charcoal, oak, 1, 0);
@@ -1769,4 +1783,126 @@ fn bulk_hauls_carry_several_items_in_a_barrel() {
         })
         .count();
     assert_eq!(stored, 8, "all stones are stored");
+}
+
+fn live_units(sim: &FortressSim, kind: ItemKind) -> u64 {
+    let ledger = sim.ledger[usize::from(kind.0)];
+    ledger.produced - ledger.removed
+}
+
+#[test]
+fn an_until_stock_order_stops_at_its_target_and_resumes_after_use() {
+    let mut sim = flat(calm());
+    let mason = ready_workshop(&mut sim, "mason", Pos3::new(4, 4, 1));
+    let (stone, block) = (kind(&sim, "stone"), kind(&sim, "block"));
+    for i in 0..10 {
+        sim.spawn_item(Pos3::new(10 + i % 5, 10 + i / 5, 1), stone, 3, 1, 0);
+    }
+    sim.step(&[FortressCommand::AddWorkOrder {
+        workshop: Some(mason),
+        recipe: "cut_blocks".into(),
+        amount: 6,
+        condition: OrderCondition::UntilStock,
+    }]);
+    for tick in 0..3000 {
+        sim.step(&[]);
+        if tick % 50 == 0 {
+            sim.check_invariants().unwrap();
+        }
+    }
+    assert_eq!(live_units(&sim, block), 6, "three runs of two blocks");
+    assert_eq!(sim.orders.len(), 1, "until-stock orders stay");
+    assert_eq!(sim.orders[0].done, 3);
+    assert!(
+        sim.workshops[0].job.is_none(),
+        "the workshop idles at the target"
+    );
+    // Using up blocks makes the order due again.
+    let used: Vec<ItemId> = sim
+        .items
+        .iter_by_id()
+        .filter(|&id| sim.icols.kind[sim.islot(id).unwrap()] == block)
+        .take(2)
+        .collect();
+    for (k, id) in used.into_iter().enumerate() {
+        sim.ops
+            .push((9, k as u64), 0, EntityCommand::Spawn(Op::DespawnItem(id)));
+    }
+    sim.apply_ops();
+    for _ in 0..1500 {
+        sim.step(&[]);
+    }
+    sim.check_invariants().unwrap();
+    assert_eq!(live_units(&sim, block), 6);
+    assert_eq!(sim.orders[0].done, 4);
+}
+
+#[test]
+fn times_orders_end_cancel_aborts_and_repeat_uses_every_workshop() {
+    let mut sim = flat(FortressConfig {
+        initial_residents: 4,
+        ..calm()
+    });
+    let first = ready_workshop(&mut sim, "mason", Pos3::new(4, 4, 1));
+    let _second = ready_workshop(&mut sim, "mason", Pos3::new(10, 4, 1));
+    let stone = kind(&sim, "stone");
+    for i in 0..30 {
+        sim.spawn_item(Pos3::new(4 + i % 10, 12 + i / 10, 1), stone, 3, 1, 0);
+    }
+    sim.step(&[
+        FortressCommand::AddWorkOrder {
+            workshop: Some(first),
+            recipe: "cut_blocks".into(),
+            amount: 2,
+            condition: OrderCondition::Times,
+        },
+        FortressCommand::AddWorkOrder {
+            workshop: Some(first),
+            recipe: "wooden_bed".into(),
+            amount: 1,
+            condition: OrderCondition::Times,
+        },
+        FortressCommand::AddWorkOrder {
+            workshop: None,
+            recipe: "no_such_recipe".into(),
+            amount: 1,
+            condition: OrderCondition::Times,
+        },
+    ]);
+    assert_eq!(
+        sim.orders.len(),
+        1,
+        "carpentry at a mason and unknown recipes are rejected"
+    );
+    assert_eq!(sim.counters.invalid_designations, 2);
+    for _ in 0..1500 {
+        sim.step(&[]);
+    }
+    assert!(sim.orders.is_empty(), "a finished Times order disappears");
+    let block = kind(&sim, "block");
+    assert_eq!(live_units(&sim, block), 4);
+
+    sim.step(&[FortressCommand::AddWorkOrder {
+        workshop: None,
+        recipe: "cut_blocks".into(),
+        amount: 0,
+        condition: OrderCondition::Repeat,
+    }]);
+    let repeat = sim.orders[0].id;
+    let mut both = false;
+    for _ in 0..400 {
+        sim.step(&[]);
+        both |= sim.workshops.iter().all(|w| w.order == Some(repeat));
+    }
+    assert!(both, "an unbound order runs in every matching workshop");
+    sim.step(&[FortressCommand::CancelWorkOrder { order: repeat }]);
+    sim.check_invariants().unwrap();
+    assert!(sim.orders.is_empty());
+    assert!(
+        sim.workshops
+            .iter()
+            .all(|w| w.job.is_none() && w.order.is_none())
+    );
+    let crafting = (0..sim.rcols.len()).any(|s| matches!(sim.rcols.task[s], Task::Craft { .. }));
+    assert!(!crafting, "workers of a cancelled order abort");
 }

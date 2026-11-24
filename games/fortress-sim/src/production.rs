@@ -89,6 +89,7 @@ impl FortressSim {
             pos,
             built: false,
             job: None,
+            order: None,
         });
         self.add_craft_job(id, None).is_some()
     }
@@ -247,6 +248,9 @@ impl FortressSim {
                     return false;
                 }
                 self.finish_craft(slot, id, &w, recipe);
+                if recipe.is_some() {
+                    self.finish_order(workshop);
+                }
                 if let Some(skill) = skill {
                     self.gain_experience(slot, skill, base);
                 }

@@ -71,6 +71,8 @@ struct State {
     slot_zone: Vec<u32>,
     zones: Vec<crate::types::Zone>,
     next_zone: u32,
+    orders: Vec<crate::types::WorkOrder>,
+    next_order: u32,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -190,6 +192,8 @@ impl FortressSim {
             slot_zone: self.slot_zone.clone(),
             zones: self.zones.clone(),
             next_zone: self.next_zone,
+            orders: self.orders.clone(),
+            next_order: self.next_order,
         };
         let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
         *out = postcard::to_allocvec(&(
@@ -295,6 +299,14 @@ impl FortressSim {
         sim.slot_zone = state.slot_zone;
         sim.zones = state.zones;
         sim.next_zone = state.next_zone;
+        if state.orders.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || state.orders.iter().any(|o| o.id >= state.next_order)
+            || state.orders.len() > crate::orders::MAX_ORDERS
+        {
+            return Err(fail("work orders must ascend by ID below the next ID"));
+        }
+        sim.orders = state.orders;
+        sim.next_order = state.next_order;
         if state
             .residents
             .windows(2)
@@ -493,6 +505,19 @@ impl FortressSim {
             write!(out, "plant:{}:{}\t", id.index, id.generation).map_err(fail)?;
             self.pcols.dump_row(slot as u32, out);
             writeln!(out).map_err(fail)?;
+        }
+        for o in &self.orders {
+            writeln!(
+                out,
+                "order:{}\tworkshop={:?} recipe={} amount={} condition={:?} done={}",
+                o.id,
+                o.workshop,
+                self.content.ids.recipes[usize::from(o.recipe)],
+                o.amount,
+                o.condition,
+                o.done
+            )
+            .map_err(fail)?;
         }
         for z in &self.zones {
             writeln!(
