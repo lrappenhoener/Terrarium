@@ -61,6 +61,23 @@ impl FortressSim {
             ),
             ("aquifer_faces", self.aquifer_sources.len() as f64),
             ("items_destroyed", self.diag.items_destroyed as f64),
+            ("heat_chunks_active", self.diag.heat_last_chunks as f64),
+            (
+                "heat_chunks_asleep",
+                (self.world.chunk_count() as u64 - self.diag.heat_last_chunks) as f64,
+            ),
+            (
+                "heat_tiles_per_tick",
+                self.diag.heat_tiles as f64 / self.tick.max(1) as f64,
+            ),
+            ("heat_sources", self.heat_sources.len() as f64),
+            ("heat_energy_total", self.heat_balance.total as f64),
+            ("heat_energy_injected", self.heat_balance.injected as f64),
+            ("heat_energy_returned", self.heat_balance.returned as f64),
+            (
+                "heat_pool_exhausted",
+                (self.diag.heat_pool_exhausted + self.heat.exhausted) as f64,
+            ),
             (
                 "invalid_designations",
                 self.counters.invalid_designations as f64,
@@ -127,7 +144,16 @@ impl FortressSim {
         }
     }
 
-    pub(crate) fn hashes(&self) -> [(&'static str, u64); 6] {
+    pub(crate) fn hashes(&self) -> [(&'static str, u64); 7] {
+        let mut heat = StateHasher::new();
+        let cells = self.energy_cells();
+        heat.write_usize(cells.len());
+        for (index, energy) in cells {
+            heat.write_u32(index);
+            heat.write_u32(energy as u32);
+        }
+        self.heat_balance.state_hash(&mut heat);
+
         let mut fluids = StateHasher::new();
         for (_, value) in self.fluid.iter_logical() {
             fluids.write_u8(*value);
@@ -202,6 +228,7 @@ impl FortressSim {
             ("jobs", jobs.finish()),
             ("meta", meta.finish()),
             ("fluids", fluids.finish()),
+            ("heat", heat.finish()),
         ]
     }
 
@@ -261,7 +288,7 @@ impl FortressSim {
             };
             let p = self.rcols.position[slot];
             // Rising fluid may leave a resident on an impassable tile until it swims away.
-            let submerged = crate::fluids::level(self.fluid_at(p)) > 0;
+            let submerged = crate::fluids::level(self.fluid_at(p)) > 0 || self.too_hot(p);
             if !self
                 .world
                 .get(p)
@@ -364,6 +391,11 @@ impl FortressSim {
             {
                 return fail("fluid conservation violated");
             }
+        }
+        if self.count_energy() != self.heat_balance.total
+            || self.heat_balance.total != self.heat_balance.injected - self.heat_balance.returned
+        {
+            return fail("energy balance violated");
         }
         for (p, value) in self.fluid.iter_logical() {
             if *value != 0

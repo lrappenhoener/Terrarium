@@ -181,7 +181,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0xdcaeb4e9807edfef;
+const GOLDEN_ASTAR: u64 = 0x4859e79a5e2622f2;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -466,11 +466,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v3-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0x6fd9485ac54d3e31);
+    assert_eq!(sim.state_hash(), 0xc83590725a7b1184);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0xe9ee201e17a5e3e4);
+    assert_eq!(sim.state_hash(), 0x3f121ebe6483c88c);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0x32ba3a9a5c3311ae;
+const GOLDEN_HIERARCHICAL: u64 = 0xde05fbb984d95aa3;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -670,4 +670,24 @@ fn fluids_are_conserved_for_ten_thousand_flood_ticks() {
     assert!(b.sources[0] > 10_000 && b.evaporated > 0);
     assert_eq!(sim.count_fluids(), b.total);
     assert_eq!(i128::from(b.total[0]), b.expected(0));
+}
+
+#[test]
+fn heat_balances_exactly_and_returns_to_ambient() {
+    let schedule = scenario_file("scenario_magma.toml");
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut peak = 0;
+    run_with_scenario(&mut sim, &schedule, 3000, |sim| {
+        sim.check_invariants().unwrap();
+        peak = peak.max(sim.heat.bound());
+    });
+    let h = sim.heat_balance;
+    assert!(h.injected > 0 && h.returned > 0, "{h:?}");
+    assert_eq!(sim.count_energy(), h.total);
+    assert_eq!(h.total, h.injected - h.returned);
+    assert!(
+        peak > 0 && peak < sim.world.chunk_count(),
+        "heat stays local"
+    );
+    assert!(sim.counters.deaths[2] < 10, "residents avoid hot tiles");
 }

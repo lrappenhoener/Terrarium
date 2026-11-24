@@ -427,6 +427,9 @@ impl FortressSim {
         self.scratch.fluid_chunks = active;
         self.scratch.fluid_may_change = may_change;
         self.apply_fluid_tiles();
+        let changed = std::mem::take(&mut self.scratch.fluid_changed);
+        self.update_heat_sources(&changed);
+        self.scratch.fluid_changed = changed;
     }
 
     fn resolve_transfers(&mut self) {
@@ -528,7 +531,7 @@ impl FortressSim {
                 if let Some(&tile) = self.world.get(p)
                     && tile.kind != TileKind::Solid
                 {
-                    let blocked = self.impassable_fluid(fluid);
+                    let blocked = self.impassable_fluid(fluid) || self.too_hot(p);
                     if tile.impassable() != blocked {
                         self.scratch
                             .fluid_tiles
@@ -575,8 +578,20 @@ impl FortressSim {
 }
 
 impl FortressSim {
-    /// Placeholder until temperature is simulated.
-    pub(crate) fn too_hot(&self, _p: Pos3) -> bool {
-        false
+    /// Removes boiled water, wakes its chunk and updates the impassable marker.
+    pub(crate) fn boil(&mut self, p: Pos3, remaining: u8, gone: u8) {
+        self.fluid
+            .set(p, if amount(remaining) == 0 { 0 } else { remaining });
+        self.balance.boiled += u64::from(gone);
+        self.balance.total[0] -= u64::from(gone);
+        if let Some(chunk) = self.fluid.chunk_of(p) {
+            self.fluid_active.wake_around(chunk);
+        }
+        if let Some(&tile) = self.world.get(p) {
+            let blocked = self.impassable_fluid(remaining) || self.too_hot(p);
+            if tile.kind != TileKind::Solid && tile.impassable() != blocked {
+                self.world.set(p, tile.with_impassable(blocked));
+            }
+        }
     }
 }

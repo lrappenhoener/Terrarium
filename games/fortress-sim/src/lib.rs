@@ -8,6 +8,7 @@ mod diagnostics;
 mod fluids;
 mod render;
 mod snapshot;
+mod temperature;
 mod types;
 pub mod view;
 mod world;
@@ -24,7 +25,7 @@ use sim_core::{
         AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
         SearchOutcome,
     },
-    physics::ActiveChunkSet,
+    physics::{ActiveChunkSet, ChunkDoubleBuffer},
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
     space::{ChunkId, ChunkedGrid3, standable, walk_neighbors},
@@ -113,6 +114,9 @@ pub(crate) struct Diagnostics {
     pub fluid_tiles: u64,
     pub fluid_last_tiles: u64,
     pub items_destroyed: u64,
+    pub heat_tiles: u64,
+    pub heat_last_chunks: u64,
+    pub heat_pool_exhausted: u64,
     pub path_cost: u64,
     pub long_paths: u64,
     pub long_path_nodes: u64,
@@ -184,6 +188,9 @@ pub struct FortressSim {
     fluid_active: ActiveChunkSet,
     balance: fluids::FluidBalance,
     aquifer_sources: Vec<Pos3>,
+    heat: ChunkDoubleBuffer<i32>,
+    heat_balance: temperature::HeatBalance,
+    heat_sources: Vec<Pos3>,
     item_index: CategoryIndex<ItemId>,
     jobs: JobBoard<JobKind, ResidentId>,
     reservations: Reservations<ResKey, ResidentId>,
@@ -211,6 +218,9 @@ struct Scratch {
     evaporating: Vec<Pos3>,
     fluid_tiles: Vec<(Pos3, Tile)>,
     dead: Vec<ResidentId>,
+    heat_was_active: Vec<bool>,
+    heat_chunks: Vec<ChunkId>,
+    hot: Vec<Pos3>,
     ids: Vec<ResidentId>,
     workers: Vec<(ResidentId, Pos3)>,
     assignments: Vec<(ResidentId, JobId)>,
@@ -249,6 +259,9 @@ impl Scratch {
             evaporating: Vec::with_capacity(4096),
             fluid_tiles: Vec::with_capacity(tiles / 8 + 4096),
             dead: Vec::with_capacity(residents),
+            heat_was_active: Vec::with_capacity(chunk_count * 2),
+            heat_chunks: Vec::with_capacity(chunk_count * 2),
+            hot: Vec::with_capacity(1 << 16),
             ids: Vec::with_capacity(residents),
             workers: Vec::with_capacity(residents),
             assignments: Vec::with_capacity(residents),
@@ -414,6 +427,12 @@ impl FortressSim {
                 .ok_or_else(|| SimError::InvalidConfig("could not reserve fluids".into()))?,
             balance: fluids::FluidBalance::default(),
             aquifer_sources: Vec::with_capacity(1 << 16),
+            heat: ChunkDoubleBuffer::new(
+                world.chunk_count(),
+                config.physics.heat_pool_chunks as usize,
+            ),
+            heat_balance: temperature::HeatBalance::default(),
+            heat_sources: Vec::with_capacity(1 << 16),
             item_index: CategoryIndex::new(w, w, d, 3, items)
                 .ok_or_else(|| SimError::InvalidConfig("could not create item index".into()))?,
             jobs: JobBoard::new(config.max_jobs as usize, w, w, d),
@@ -446,6 +465,7 @@ impl FortressSim {
             .set_sleeping_enabled(self.config.physics.sleeping);
         self.wake_fluid_chunks();
         self.rebuild_aquifer_sources();
+        self.rebuild_heat_sources();
     }
 
     /// Records a death once per tick and despawns the resident at the tick end.
@@ -1029,6 +1049,7 @@ impl FortressSim {
         if !self.scratch.chunks.is_empty() {
             let chunks = std::mem::take(&mut self.scratch.chunks);
             self.update_aquifer_sources(&chunks);
+            self.update_heat_sources(&chunks);
             self.scratch.chunks = chunks;
         }
         let changed = self.scratch.chunks.len() as u64;
@@ -1824,6 +1845,7 @@ impl Simulation for FortressSim {
         phase(probe, "move", || self.movement());
         phase(probe, "work", || self.work());
         phase(probe, "fluids", || self.fluids());
+        phase(probe, "temperature", || self.temperature_step());
         phase(probe, "lifecycle", || self.lifecycle());
         phase(probe, "environment", || self.environment());
         self.tick = self.tick.saturating_add(1);

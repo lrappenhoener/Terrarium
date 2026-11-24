@@ -19,5 +19,5 @@ commands = [
 [[schedule]]
 tick = 1500
 commands = [
-    { DesignateDig = { from = { x = 41, y = 48, z = 10 }, to = { x = 60, y = 48, z = 10 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 41, y = 47, z = 10 }, to = { x = 62, y = 49, z = 10 }, mode = "Dig" } },
 ]
