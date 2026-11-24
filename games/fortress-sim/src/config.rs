@@ -53,6 +53,8 @@ pub struct FortressConfig {
     pub embark_y: i32,
     pub initial_residents: u32,
     pub initial_food: u32,
+    /// Additional starting rations per initial resident.
+    pub initial_food_per_resident: u32,
     pub max_residents: u32,
     pub max_items: u32,
     pub max_jobs: u32,
@@ -105,6 +107,7 @@ impl Default for FortressConfig {
             embark_y: 48,
             initial_residents: 25,
             initial_food: 60,
+            initial_food_per_resident: 0,
             max_residents: 2_000,
             max_items: 40_000,
             max_jobs: 20_000,
@@ -161,7 +164,9 @@ impl FortressConfig {
         if self.initial_residents > self.max_residents
             || !(1..=1_000_000).contains(&self.max_residents)
             || !(1..=4_000_000).contains(&self.max_items)
-            || self.initial_food > self.max_items
+            || u64::from(self.initial_food)
+                + u64::from(self.initial_food_per_resident) * u64::from(self.initial_residents)
+                > u64::from(self.max_items)
             || !(1..=4_000_000).contains(&self.max_jobs)
             || !(8..=65_535).contains(&self.max_path_nodes)
         {
@@ -188,6 +193,13 @@ impl FortressConfig {
             return fail("invalid rates, durations or budgets");
         }
         Ok(())
+    }
+
+    pub(crate) fn starting_food(&self) -> u32 {
+        self.initial_food.saturating_add(
+            self.initial_food_per_resident
+                .saturating_mul(self.initial_residents),
+        )
     }
 
     pub(crate) fn hash_runtime(&self, hash: &mut StateHasher) {

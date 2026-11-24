@@ -485,3 +485,47 @@ fn golden_hash_with_hierarchical_pathfinding() {
 }
 
 const GOLDEN_HIERARCHICAL: u64 = 0x000538f6ea0f8d1e;
+
+#[test]
+fn aborting_on_a_full_stockpile_drops_outside_it() {
+    let mut sim = flat(calm());
+    sim.step(&[FortressCommand::DesignateStockpile {
+        from: Pos3::new(4, 4, 1),
+        to: Pos3::new(14, 14, 1),
+    }]);
+    for y in 4..=14 {
+        for x in 4..=14 {
+            sim.spawn_item(Pos3::new(x, y, 1), ItemKind::Stone, 3);
+        }
+    }
+    let carried = sim
+        .spawn_item(Pos3::new(1, 1, 1), ItemKind::Food, 0)
+        .unwrap();
+    let id = sim.residents.iter_by_id().next().unwrap();
+    let slot = sim.rslot(id).unwrap();
+    sim.rcols.position[slot] = Pos3::new(9, 9, 1);
+    sim.pick_up(slot, id, carried);
+    sim.check_invariants().unwrap();
+    sim.abort_task(id);
+    let dropped = sim.item_ground(carried).unwrap();
+    assert!(!sim.is_stockpile(dropped), "dropped at {dropped:?}");
+    assert_eq!(dropped.chebyshev(Pos3::new(9, 9, 1)), 6);
+    sim.check_invariants().unwrap();
+}
+
+#[test]
+fn large_embarks_spawn_only_on_tiles_reachable_from_the_embark() {
+    let config = FortressConfig {
+        initial_residents: 400,
+        world_size_xy: 192,
+        ..FortressConfig::default()
+    };
+    let sim = FortressSim::new(42, config).unwrap();
+    let embark = sim.embark();
+    assert!(
+        sim.rcols
+            .position
+            .iter()
+            .all(|p| sim.connectivity.reachable(embark, *p))
+    );
+}

@@ -417,6 +417,7 @@ impl FortressSim {
 
     fn standing_tiles_near(&self, center: Pos3, count: usize, out: &mut Vec<Pos3>) {
         out.clear();
+        let embark = self.embark();
         let size = self.config.world_size_xy;
         for radius in 0..size {
             for y in center.y - radius..=center.y + radius {
@@ -425,7 +426,9 @@ impl FortressSim {
                         continue;
                     }
                     let p = Pos3::new(x, y, world::surface(self.seed, &self.config, x, y));
-                    if self.world.get(p).is_some_and(|t| standable(*t)) {
+                    if self.world.get(p).is_some_and(|t| standable(*t))
+                        && self.connectivity.reachable(embark, p)
+                    {
                         out.push(p);
                         if out.len() >= count {
                             return;
@@ -627,7 +630,8 @@ impl FortressSim {
                     Ok(_) => !self.reservations.is_reserved(ResKey::Slot(p)) && !self.items_on(p),
                 }
         };
-        (0..=3)
+        // Rings grow until a usable tile appears; the world bounds the search.
+        (0..=self.config.world_size_xy)
             .flat_map(|r: i32| (-r..=r).flat_map(move |dy| (-r..=r).map(move |dx| (r, dx, dy))))
             .filter(|&(r, dx, dy)| dx.abs().max(dy.abs()) == r)
             .map(|(_, dx, dy)| at.offset(dx, dy, 0))
@@ -636,7 +640,7 @@ impl FortressSim {
     }
 
     fn items_on(&self, p: Pos3) -> bool {
-        self.icols.location.contains(&ItemLocation::Ground(p))
+        self.item_index.any_at(p)
     }
 
     /// Nearest tile within three steps on the same level to clear a build site.
@@ -1593,7 +1597,7 @@ impl Simulation for FortressSim {
             sim.spawn_resident(spots[i % spots.len()]);
         }
         sim.standing_tiles_near(sim.embark(), 9, &mut spots);
-        for i in 0..sim.config.initial_food as usize {
+        for i in 0..sim.config.starting_food() as usize {
             if let Some(&at) = spots.get(i % spots.len().max(1)) {
                 sim.spawn_item(at, ItemKind::Food, 0);
             }

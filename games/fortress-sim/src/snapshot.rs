@@ -222,7 +222,7 @@ impl FortressSim {
         hash.write_bytes(b"fortress-content-v1");
         self.config.hash_runtime(&mut hash);
         hash.write_u32(self.config.initial_residents);
-        hash.write_u32(self.config.initial_food);
+        hash.write_u32(self.config.starting_food());
         hash.write_bool(self.config.debug_shuffle_slots);
         hash.finish()
     }
