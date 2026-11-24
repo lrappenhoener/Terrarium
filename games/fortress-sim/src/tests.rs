@@ -181,7 +181,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x4859e79a5e2622f2;
+const GOLDEN_ASTAR: u64 = 0x3aad219010470762;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -466,11 +466,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v3-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0xc83590725a7b1184);
+    assert_eq!(sim.state_hash(), 0x4ea723f7ec2598fb);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0x3f121ebe6483c88c);
+    assert_eq!(sim.state_hash(), 0x6ce151a1a75ddc13);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0xde05fbb984d95aa3;
+const GOLDEN_HIERARCHICAL: u64 = 0x131c03fa8d15a4e6;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -690,4 +690,29 @@ fn heat_balances_exactly_and_returns_to_ambient() {
         "heat stays local"
     );
     assert!(sim.counters.deaths[2] < 10, "residents avoid hot tiles");
+}
+
+#[test]
+fn an_undermined_slab_caves_in_and_becomes_stone() {
+    let schedule = scenario_file("scenario_cavein.toml");
+    let mut sim = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut before = None;
+    run_with_scenario(&mut sim, &schedule, 1500, |sim| {
+        sim.check_invariants().unwrap();
+        if sim.counters.collapses == 0 {
+            before = Some(sim.icols.len());
+        }
+    });
+    assert_eq!(sim.counters.collapses, 1);
+    assert_eq!(sim.counters.collapsed_tiles, 16);
+    for y in 53..=56 {
+        for x in 25..=28 {
+            let tile = *sim.world.get(Pos3::new(x, y, 15)).unwrap();
+            assert_ne!(tile.kind, TileKind::Solid, "slab tile {x},{y} fell");
+        }
+    }
+    assert!(
+        sim.icols.len() >= before.unwrap(),
+        "fallen tiles became stones"
+    );
 }

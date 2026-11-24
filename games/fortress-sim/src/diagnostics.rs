@@ -74,6 +74,12 @@ impl FortressSim {
             ("heat_energy_total", self.heat_balance.total as f64),
             ("heat_energy_injected", self.heat_balance.injected as f64),
             ("heat_energy_returned", self.heat_balance.returned as f64),
+            ("collapses", self.counters.collapses as f64),
+            ("collapsed_tiles", self.counters.collapsed_tiles as f64),
+            ("support_queue", self.support.len() as f64),
+            ("support_checks", self.support.stats.checks as f64),
+            ("support_units", self.support.stats.units as f64),
+            ("support_retries", self.support.stats.retries as f64),
             (
                 "heat_pool_exhausted",
                 (self.diag.heat_pool_exhausted + self.heat.exhausted) as f64,
@@ -153,6 +159,11 @@ impl FortressSim {
             heat.write_u32(energy as u32);
         }
         self.heat_balance.state_hash(&mut heat);
+        let pending = self.support.pending();
+        heat.write_usize(pending.len());
+        for (p, tries) in pending {
+            (p, tries).state_hash(&mut heat);
+        }
 
         let mut fluids = StateHasher::new();
         for (_, value) in self.fluid.iter_logical() {

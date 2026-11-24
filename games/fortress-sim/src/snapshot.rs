@@ -55,6 +55,7 @@ struct State {
     balance: crate::fluids::FluidBalance,
     energy: Vec<(u32, i32)>,
     heat_balance: crate::temperature::HeatBalance,
+    support: Vec<(Pos3, u8)>,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -155,6 +156,7 @@ impl FortressSim {
             balance: self.balance,
             energy: self.energy_cells(),
             heat_balance: self.heat_balance,
+            support: self.support.pending(),
         };
         let (version, hash) = world::generator_fingerprint(&self.config);
         *out =
@@ -302,6 +304,7 @@ impl FortressSim {
         sim.fluid.clear_changes();
         sim.balance = state.balance;
         sim.heat_balance = state.heat_balance;
+        sim.support.restore(&state.support);
         sim.init_physics();
         if state.energy.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
             return Err(fail("energy cells must ascend by index"));

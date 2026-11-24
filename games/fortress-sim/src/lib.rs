@@ -3,6 +3,7 @@
 //! Integer fortress prototype: residents dig into a mountain, haul and build
 //! across stacked levels.
 
+mod collapse;
 mod config;
 mod diagnostics;
 mod fluids;
@@ -29,6 +30,7 @@ use sim_core::{
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
     space::{ChunkId, ChunkedGrid3, standable, walk_neighbors},
+    support::SupportChecker,
     topology::LayeredWalkTopology,
 };
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
@@ -85,6 +87,8 @@ pub(crate) struct Counters {
     pub invalid_designations: u64,
     pub aborted_tasks: u64,
     pub completed_jobs: u64,
+    pub collapses: u64,
+    pub collapsed_tiles: u64,
 }
 
 sim_core::state_hash_struct!(Counters {
@@ -96,7 +100,9 @@ sim_core::state_hash_struct!(Counters {
     deaths,
     invalid_designations,
     aborted_tasks,
-    completed_jobs
+    completed_jobs,
+    collapses,
+    collapsed_tiles
 });
 
 /// Diagnostics excluded from hashes and snapshots.
@@ -116,6 +122,8 @@ pub(crate) struct Diagnostics {
     pub items_destroyed: u64,
     pub heat_tiles: u64,
     pub heat_last_chunks: u64,
+    pub heat_last_tiles: u64,
+    pub support_last_units: u64,
     pub heat_pool_exhausted: u64,
     pub path_cost: u64,
     pub long_paths: u64,
@@ -191,6 +199,7 @@ pub struct FortressSim {
     heat: ChunkDoubleBuffer<i32>,
     heat_balance: temperature::HeatBalance,
     heat_sources: Vec<Pos3>,
+    support: SupportChecker,
     item_index: CategoryIndex<ItemId>,
     jobs: JobBoard<JobKind, ResidentId>,
     reservations: Reservations<ResKey, ResidentId>,
@@ -221,6 +230,8 @@ struct Scratch {
     heat_was_active: Vec<bool>,
     heat_chunks: Vec<ChunkId>,
     hot: Vec<Pos3>,
+    unsupported: Vec<Pos3>,
+    fall_paths: Vec<(Pos3, Pos3, u16)>,
     ids: Vec<ResidentId>,
     workers: Vec<(ResidentId, Pos3)>,
     assignments: Vec<(ResidentId, JobId)>,
@@ -262,6 +273,8 @@ impl Scratch {
             heat_was_active: Vec::with_capacity(chunk_count * 2),
             heat_chunks: Vec::with_capacity(chunk_count * 2),
             hot: Vec::with_capacity(1 << 16),
+            unsupported: Vec::with_capacity(1 << 16),
+            fall_paths: Vec::with_capacity(1 << 16),
             ids: Vec::with_capacity(residents),
             workers: Vec::with_capacity(residents),
             assignments: Vec::with_capacity(residents),
@@ -433,6 +446,7 @@ impl FortressSim {
             ),
             heat_balance: temperature::HeatBalance::default(),
             heat_sources: Vec::with_capacity(1 << 16),
+            support: SupportChecker::new(world.len(), 1 << 16),
             item_index: CategoryIndex::new(w, w, d, 3, items)
                 .ok_or_else(|| SimError::InvalidConfig("could not create item index".into()))?,
             jobs: JobBoard::new(config.max_jobs as usize, w, w, d),
@@ -1629,7 +1643,9 @@ impl FortressSim {
         self.scratch.tile_changes.sort_unstable_by_key(|&(p, _)| p);
         for i in 0..self.scratch.tile_changes.len() {
             let (p, tile) = self.scratch.tile_changes[i];
+            let old = self.world.get(p).copied().unwrap_or(tile);
             self.world.set(p, tile);
+            self.note_tile_change(p, old, tile);
         }
     }
 
@@ -1846,6 +1862,8 @@ impl Simulation for FortressSim {
         phase(probe, "work", || self.work());
         phase(probe, "fluids", || self.fluids());
         phase(probe, "temperature", || self.temperature_step());
+        phase(probe, "support", || self.support_step());
+        phase(probe, "collapse", || self.collapse_step());
         phase(probe, "lifecycle", || self.lifecycle());
         phase(probe, "environment", || self.environment());
         self.tick = self.tick.saturating_add(1);
@@ -1910,6 +1928,9 @@ impl Simulation for FortressSim {
             ("items", self.items.len() as u64),
             ("tiles", self.world.len() as u64),
             ("changed_chunks", self.diag.last_changed_chunks),
+            ("active_fluid_tiles", self.diag.fluid_last_tiles),
+            ("active_heat_tiles", self.diag.heat_last_tiles),
+            ("support_checks", self.diag.support_last_units),
         ]
     }
 
@@ -1924,6 +1945,10 @@ impl Simulation for FortressSim {
             ("work", "residents"),
             ("lifecycle", "items"),
             ("environment", "tiles"),
+            ("fluids", "active_fluid_tiles"),
+            ("temperature", "active_heat_tiles"),
+            ("support", "support_checks"),
+            ("collapse", "support_checks"),
         ]
     }
 

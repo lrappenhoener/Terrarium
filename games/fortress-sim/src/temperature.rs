@@ -208,6 +208,7 @@ impl FortressSim {
             }
         }
         self.diag.heat_tiles += processed;
+        self.diag.heat_last_tiles = processed;
         self.heat.swap();
         self.heat_effects();
         self.settle_heat();

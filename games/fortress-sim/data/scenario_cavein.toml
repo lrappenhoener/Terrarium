@@ -1,0 +1,21 @@
+# Seed 42, default world. A tunnel at z=14 leads to a room (x 22..30, y 50..58).
+# A stair at (23,51) climbs to z=15 and z=16. Around the 4x4 slab x 25..28,
+# y 53..56 on z=15 residents dig a ring of up/down stairs, which have no floor and
+# do not support anything, and they clear the level above the slab. When the last
+# connection is gone, the slab is unsupported and falls into the room below.
+
+[[schedule]]
+tick = 0
+commands = [
+    { DesignateStockpile = { from = { x = 1, y = 24, z = 14 }, to = { x = 12, y = 43, z = 14 } } },
+    { DesignateDig = { from = { x = 14, y = 47, z = 14 }, to = { x = 21, y = 49, z = 14 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 23, y = 51, z = 14 }, to = { x = 23, y = 51, z = 14 }, mode = "StairUp" } },
+    { DesignateDig = { from = { x = 22, y = 49, z = 14 }, to = { x = 30, y = 58, z = 14 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 23, y = 51, z = 15 }, to = { x = 24, y = 51, z = 15 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 24, y = 52, z = 15 }, to = { x = 29, y = 52, z = 15 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 24, y = 57, z = 15 }, to = { x = 29, y = 57, z = 15 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 24, y = 53, z = 15 }, to = { x = 24, y = 56, z = 15 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 29, y = 53, z = 15 }, to = { x = 29, y = 56, z = 15 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 23, y = 51, z = 16 }, to = { x = 23, y = 51, z = 16 }, mode = "StairDown" } },
+    { DesignateDig = { from = { x = 24, y = 51, z = 16 }, to = { x = 29, y = 57, z = 16 }, mode = "Dig" } },
+]
