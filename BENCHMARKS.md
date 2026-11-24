@@ -291,3 +291,17 @@ Schlimmste Ticks (Lauf 1): `dig_in` 10.959 (5,9 ms), `flood` 4.291 (17,4 ms, dav
 | 12 | 62.806 | 4.574 | 45 | 2.516 | 683 | 90,6 % | 587 | 78,7 |
 
 Die Wassermenge vervierfacht sich, die Kosten pro aktiver Kachel steigen nur um 10,6 %. Die Kosten folgen den aktiven Kacheln und nicht der Wassermenge, weil ruhendes Wasser schläft. Der leichte Anstieg pro Kachel liegt in `fluids` (mehr Transfers pro Kachel bei breiterem Fluss). Der Sweep über `physics.aquifer_interval=12,6,3,1` ändert die Wassermenge kaum (22.337 → 25.441), ns pro Kachel bleiben bei 71–76.
+
+## Etappe 6 · Schritt 0b – Ausreißer reproduzierbar prüfen
+
+`--repeat <N>` führt denselben Lauf N-mal aus und vergleicht die Tick-Zeiten Tick für Tick. Ein Tick ist ein Ausreißer eines Laufs, wenn er über `--outlier-factor` (Standard 3) × Median aller Ticks dieses Laufs liegt. Reproduzierbar ist er, wenn das in mindestens N−1 Läufen gilt; sonst wird er als einmalig („vermutlich Rauschen“) gemeldet. `--worst-ticks` nutzt bei `--repeat` den Median pro Tick über alle Läufe, die Phasenaufteilung ist ebenfalls der Median pro Phase. Für eine sinnvolle Trennung braucht es N ≥ 3.
+
+Nachprüfung des 17-ms-Ticks aus Etappe 5 (24.11.2026, `zen`, `scenario_flood.toml`, 20.000 Ticks, `--repeat 5 --profile-phases --worst-ticks 10`, Hash `0xed6cc7456121d81a` unverändert):
+
+- Median-Tick der Läufe 195–202 µs, p99 520–549 µs.
+- **Tick 4.291 ist in keinem der 5 Läufe auffällig.** Der 17-ms-Tick war Rauschen der Maschine.
+- 362 einmalige Ausreißer, der größte bei Tick 4.989 mit 4,6 ms in 1/5 Läufen (Median 440 µs).
+- 26 reproduzierbare Ausreißer, alle unter 1,6 ms:
+  - Tick 1 (1,58 ms, Wegsuche beim Start),
+  - 22 Ticks mit 0,76–1,18 ms, davon 0,54–0,75 ms in `connectivity`: Flood-Fill der Regionen, wenn Wasser eine Schwelle überschreitet und die Topologie ändert,
+  - 3 Ticks um 0,6 ms mit Wegsuchen (`path` ≈ 0,3 ms).

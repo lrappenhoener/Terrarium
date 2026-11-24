@@ -58,6 +58,14 @@ struct Cli {
     profile_phases: bool,
     #[arg(long, default_value_t = 0)]
     worst_ticks: u64,
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "Runs compared tick by tick to separate reproducible outliers from noise"
+    )]
+    repeat: u32,
+    #[arg(long, default_value_t = 3.0)]
+    outlier_factor: f64,
     #[arg(long)]
     max_step_allocs: Option<u64>,
     #[arg(long, default_value_t = 10)]
@@ -141,6 +149,8 @@ impl From<Cli> for RunOptions {
                 trace_ids: cli.trace_ids,
                 trace_every: cli.trace_every,
                 trace_out: cli.trace_out,
+                repeat: cli.repeat,
+                outlier_factor: cli.outlier_factor,
             },
         }
     }

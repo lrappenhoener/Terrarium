@@ -221,3 +221,46 @@ impl WorstTicks {
             .collect()
     }
 }
+
+/// Phase durations of every tick of one run, for `--repeat`.
+#[derive(Default)]
+pub(crate) struct TickPhases {
+    names: Vec<&'static str>,
+    offsets: Vec<usize>,
+    spans: Vec<(usize, u64)>,
+}
+
+impl TickPhases {
+    pub fn record(&mut self, recorder: &Recorder) {
+        if self.offsets.is_empty() {
+            self.offsets.push(0);
+        }
+        for span in &recorder.spans[..recorder.count] {
+            let index = self
+                .names
+                .iter()
+                .position(|name| *name == span.name)
+                .unwrap_or_else(|| {
+                    self.names.push(span.name);
+                    self.names.len() - 1
+                });
+            self.spans.push((index, span.ns));
+        }
+        self.offsets.push(self.spans.len());
+    }
+
+    pub fn names(&self) -> &[&'static str] {
+        &self.names
+    }
+
+    /// Nanoseconds of `name` in the tick with index `tick`, zero if absent.
+    pub fn get(&self, tick: usize, name: &str) -> u64 {
+        let (Some(&from), Some(&to)) = (self.offsets.get(tick), self.offsets.get(tick + 1)) else {
+            return 0;
+        };
+        self.spans[from..to]
+            .iter()
+            .find(|(index, _)| self.names[*index] == name)
+            .map_or(0, |&(_, ns)| ns)
+    }
+}

@@ -624,3 +624,109 @@ fn save_load_detects_an_immediate_difference() {
     ));
     assert!(error.to_string().contains("immediately after loading"));
 }
+
+#[derive(Clone, Default, Deserialize)]
+pub(crate) struct SpikeConfig {}
+
+/// Tick 300 does 40 times the work in every run; tick 500 sleeps in one run only.
+pub(crate) struct SpikeSim {
+    tick: u64,
+    value: u64,
+    instance: u64,
+}
+
+impl SpikeSim {
+    fn work(&mut self, rounds: u64) {
+        for i in 0..rounds {
+            self.value =
+                std::hint::black_box(self.value.wrapping_mul(6364136223846793005).wrapping_add(i));
+        }
+    }
+}
+
+impl Simulation for SpikeSim {
+    type Config = SpikeConfig;
+    type Command = usize;
+
+    fn new(_seed: u64, _config: SpikeConfig) -> Result<Self, SimError> {
+        static INSTANCES: AtomicU64 = AtomicU64::new(0);
+        Ok(Self {
+            tick: 0,
+            value: 1,
+            instance: INSTANCES.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    fn step(&mut self, _commands: &[usize]) {
+        self.tick += 1;
+        self.work(if self.tick == 300 { 800_000 } else { 20_000 });
+        if self.tick == 500 && self.instance % 3 == 1 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    fn step_profiled(&mut self, commands: &[usize], probe: &mut dyn PhaseProbe) {
+        probe.enter("work");
+        self.step(commands);
+        probe.exit("work");
+    }
+
+    fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    fn is_finished(&self) -> bool {
+        false
+    }
+
+    fn metrics(&self) -> SimMetrics {
+        SimMetrics {
+            active_entities: 1,
+            custom_gauges: vec![],
+        }
+    }
+
+    fn state_hash(&self) -> u64 {
+        let mut hash = StateHasher::new();
+        hash.write_u64(self.tick);
+        hash.write_u64(self.value);
+        hash.finish()
+    }
+
+    fn check_invariants(&self) -> Result<(), SimError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn repeated_runs_separate_reproducible_outliers_from_noise() {
+    let mut opts = options();
+    opts.ticks = 1000;
+    opts.telemetry.repeat = 3;
+    opts.telemetry.profile_phases = true;
+    opts.telemetry.worst_ticks = 3;
+    let report = run_simulation::<SpikeSim>(&opts).unwrap();
+    let repeat = report.repeat.as_ref().unwrap();
+    assert_eq!(repeat.runs, 3);
+    let reproducible: Vec<u64> = repeat.reproducible.iter().map(|o| o.tick).collect();
+    let one_off: Vec<u64> = repeat.one_off.iter().map(|o| o.tick).collect();
+    assert_eq!(
+        repeat.reproducible.first().map(|o| o.tick),
+        Some(300),
+        "{reproducible:?}"
+    );
+    assert!(repeat.reproducible[0].runs_over >= 2);
+    assert_eq!(repeat.reproducible[0].phases_us[0].0, "work");
+    assert!(!reproducible.contains(&500), "{reproducible:?}");
+    assert!(one_off.contains(&500), "{one_off:?}");
+    assert_eq!(
+        report.worst_ticks[0].tick, 300,
+        "worst ticks use the median per tick"
+    );
+    assert!(report.to_string().contains("Reproduzierbar: Tick 300"));
+    assert!(
+        report
+            .to_string()
+            .contains("Einmalig, vermutlich Rauschen: Tick 500")
+    );
+}

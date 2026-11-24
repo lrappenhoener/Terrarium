@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 use serde::Serialize;
 
-use crate::{PhaseReport, WorstTick};
+use crate::{PhaseReport, RepeatReport, WorstTick};
 
 #[derive(Debug, Serialize)]
 pub struct RunReport {
@@ -28,6 +28,7 @@ pub struct RunReport {
     pub snapshots: Vec<SnapshotReport>,
     pub step_allocations_total: Option<u128>,
     pub step_allocations_max: Option<u64>,
+    pub repeat: Option<RepeatReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,6 +161,38 @@ impl Display for RunReport {
                 write!(f, " | {name} {:.2} µs", us)?;
             }
             writeln!(f)?;
+        }
+        if let Some(repeat) = &self.repeat {
+            writeln!(
+                f,
+                "Wiederholung: {} Läufe | Median-Tick {:?} µs | p99 {:?} µs | Ausreißer ab Faktor {}",
+                repeat.runs, repeat.median_tick_us, repeat.p99_us, repeat.outlier_factor
+            )?;
+            writeln!(
+                f,
+                "Reproduzierbare Ausreißer: {} | einmalige Ausreißer (vermutlich Rauschen): {}",
+                repeat.reproducible_total, repeat.one_off_total
+            )?;
+            for (label, list) in [
+                ("Reproduzierbar", &repeat.reproducible),
+                ("Einmalig, vermutlich Rauschen", &repeat.one_off),
+            ] {
+                for outlier in list {
+                    write!(
+                        f,
+                        "{label}: Tick {} | Median {:.2} µs | Max {:.2} µs | in {}/{} Läufen",
+                        outlier.tick,
+                        outlier.median_us,
+                        outlier.max_us,
+                        outlier.runs_over,
+                        repeat.runs
+                    )?;
+                    for (name, us) in &outlier.phases_us {
+                        write!(f, " | {name} {us:.2} µs")?;
+                    }
+                    writeln!(f)?;
+                }
+            }
         }
         for (name, value) in &self.custom_gauges {
             writeln!(f, "{name} {value:.2}")?;

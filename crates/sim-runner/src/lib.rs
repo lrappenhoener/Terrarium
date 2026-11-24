@@ -5,6 +5,7 @@ mod divergence;
 mod input;
 mod options;
 mod profile;
+mod repeat;
 mod replay;
 mod report;
 pub use replay::replay_game;
@@ -24,7 +25,8 @@ use thiserror::Error;
 use input::{ScheduleEntry, load_schedule};
 pub use options::parse_sweep;
 pub use profile::{PhaseReport, WorstTick};
-use profile::{PhaseSeries, Recorder, WorstTicks};
+use profile::{PhaseSeries, Recorder, TickPhases, WorstTicks};
+pub use repeat::{Outlier, RepeatReport};
 pub use report::{LatencyStats, RunReport, SnapshotReport};
 use trace::Trace;
 
@@ -205,6 +207,10 @@ pub struct TelemetryOptions {
     pub trace_ids: Vec<u64>,
     pub trace_every: u64,
     pub trace_out: Option<PathBuf>,
+    /// Runs of the same simulation compared tick by tick; 1 disables the comparison.
+    pub repeat: u32,
+    /// Multiple of a run's median tick above which a tick counts as an outlier.
+    pub outlier_factor: f64,
 }
 
 impl Default for TelemetryOptions {
@@ -218,6 +224,8 @@ impl Default for TelemetryOptions {
             trace_ids: Vec::new(),
             trace_every: 1,
             trace_out: None,
+            repeat: 1,
+            outlier_factor: 3.0,
         }
     }
 }
@@ -246,6 +254,7 @@ struct CompletedRun {
     dimensions: Vec<(&'static str, &'static str)>,
     step_allocations_total: u128,
     step_allocations_max: u64,
+    tick_phases: Option<TickPhases>,
 }
 
 pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, RunnerError> {
@@ -278,6 +287,14 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         opts
     };
     let telemetry = &opts.telemetry;
+    if telemetry.repeat == 0
+        || !telemetry.outlier_factor.is_finite()
+        || telemetry.outlier_factor <= 0.0
+    {
+        return Err(RunnerError::InvalidOptions(
+            "--repeat needs at least one run and --outlier-factor a positive factor".into(),
+        ));
+    }
     if telemetry.max_step_allocs.is_some() && telemetry.allocation_counter.is_none() {
         return Err(RunnerError::InvalidOptions(
             "an allocation limit requires an allocation counter".into(),
@@ -369,6 +386,7 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
             retain_snapshots: opts.artifacts.bisect
                 && (opts.verify_determinism || opts.artifacts.verify_save_load)
                 && S::snapshot_version() != 0,
+            timing: telemetry.repeat > 1,
             ..Pass::default()
         },
     );
@@ -417,6 +435,13 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         .into_iter()
         .map(|series| series.report(total_ns, ticks_executed, &first.dimensions, &scale_units))
         .collect();
+    let mut timings = Vec::new();
+    if telemetry.repeat > 1 {
+        timings.push(repeat::Timing {
+            latencies: first.latencies.clone(),
+            phases: first.tick_phases.take(),
+        });
+    }
     let latency_us = LatencyStats::from_samples(&mut first.latencies);
     if let Some(limit) = opts.budget_p99_us
         && let Some(actual) =
@@ -496,6 +521,34 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
     } else {
         None
     };
+    let repeat_report = if timings.is_empty() {
+        None
+    } else {
+        for _ in 1..telemetry.repeat {
+            let mut run = run_once::<S>(
+                opts,
+                &start,
+                &schedule,
+                None,
+                Pass {
+                    timing: true,
+                    ..Pass::default()
+                },
+            )?;
+            timings.push(repeat::Timing {
+                latencies: std::mem::take(&mut run.latencies),
+                phases: run.tick_phases.take(),
+            });
+        }
+        let (report, worst) = repeat::analyze(
+            &timings,
+            start.tick(),
+            telemetry.outlier_factor,
+            usize::try_from(telemetry.worst_ticks).unwrap_or(usize::MAX),
+        );
+        first.worst_ticks = worst;
+        Some(report)
+    };
     let tick = first.tick;
     Ok(RunReport {
         tick,
@@ -524,11 +577,14 @@ pub fn run_simulation<S: Simulation>(opts: &RunOptions) -> Result<RunReport, Run
         step_allocations_max: telemetry
             .allocation_counter
             .map(|_| first.step_allocations_max),
+        repeat: repeat_report,
     })
 }
 
 #[derive(Default)]
 struct Pass<'a> {
+    /// Keeps per-tick phase times and profiles without diagnostics (`--repeat`).
+    timing: bool,
     roundtrips: &'a [u64],
     playback: Option<&'a replay::Playback>,
     config: Option<&'a options::ConfigText>,
@@ -667,7 +723,8 @@ fn run_pass<S: Simulation>(
     }
     let initial_tick = tick;
     let mut recorder = Recorder::new();
-    let profile = telemetry.profile_phases && diagnostics.is_some();
+    let profile = telemetry.profile_phases && (diagnostics.is_some() || pass.timing);
+    let mut tick_phases = (pass.timing && profile).then(TickPhases::default);
     let mut noop = NoopProbe;
     let mut phases = Vec::new();
     let mut worst = WorstTicks::new(if diagnostics.is_some() {
@@ -718,6 +775,9 @@ fn run_pass<S: Simulation>(
         step_allocations_total += u128::from(allocations);
         step_allocations_max = step_allocations_max.max(allocations);
         worst.record(sim.tick(), elapsed, &recorder);
+        if let Some(tick_phases) = &mut tick_phases {
+            tick_phases.record(&recorder);
+        }
         if profile {
             recorder.flush(&mut phases, opts.ticks)?;
         }
@@ -821,6 +881,7 @@ fn run_pass<S: Simulation>(
         dimensions: sim.phase_dimensions(),
         step_allocations_total,
         step_allocations_max,
+        tick_phases,
     })
 }
 
