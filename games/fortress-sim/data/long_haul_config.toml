@@ -1,0 +1,6 @@
+# World for scenario_long_haul.toml: 48 levels, standing level of the plain at z=34.
+world_depth = 48
+ground_level = 34
+mountain_height = 12
+initial_residents = 40
+initial_food_per_resident = 3

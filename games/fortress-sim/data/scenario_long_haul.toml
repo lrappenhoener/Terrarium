@@ -1,0 +1,45 @@
+# Use with --config games/fortress-sim/data/long_haul_config.toml.
+# A tunnel at z=34, a stair shaft at (40,48) down to z=3 (32 levels), a long
+# gallery and mines at the bottom, the stockpile on the surface far west and
+# build sites on the plain east of the mountain. Hauls and builds walk well over
+# 100 nodes.
+
+[[schedule]]
+tick = 0
+commands = [
+    { DesignateStockpile = { from = { x = 1, y = 2, z = 34 }, to = { x = 11, y = 94, z = 34 } } },
+    { DesignateDig = { from = { x = 14, y = 47, z = 34 }, to = { x = 39, y = 49, z = 34 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 34 }, to = { x = 40, y = 48, z = 34 }, mode = "StairDown" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 4 }, to = { x = 40, y = 48, z = 33 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 40, y = 48, z = 3 }, to = { x = 40, y = 48, z = 3 }, mode = "StairUp" } },
+    { DesignateDig = { from = { x = 41, y = 47, z = 3 }, to = { x = 78, y = 49, z = 3 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 70, y = 40, z = 3 }, to = { x = 80, y = 46, z = 3 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 70, y = 50, z = 3 }, to = { x = 80, y = 56, z = 3 }, mode = "Dig" } },
+]
+
+[[schedule]]
+tick = 6000
+commands = [
+    { Build = { pos = { x = 90, y = 40, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 41, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 42, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 43, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 44, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 52, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 53, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 54, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 55, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 90, y = 56, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 48, y = 90, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 49, y = 90, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 50, y = 90, z = 34 }, kind = "Door" } },
+    { Build = { pos = { x = 51, y = 90, z = 34 }, kind = "Wall" } },
+    { Build = { pos = { x = 52, y = 90, z = 34 }, kind = "Wall" } },
+]
+
+[[schedule]]
+tick = 9000
+commands = [
+    { DesignateDig = { from = { x = 60, y = 30, z = 3 }, to = { x = 69, y = 46, z = 3 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 60, y = 50, z = 3 }, to = { x = 69, y = 66, z = 3 }, mode = "Dig" } },
+]

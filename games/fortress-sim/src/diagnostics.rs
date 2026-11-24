@@ -59,6 +59,12 @@ impl FortressSim {
             ("path_budget_exceeded", path.budget_exceeded as f64),
             ("path_skipped_unreachable", path.skipped as f64),
             ("path_avg_nodes", per(path.path_nodes, path.found)),
+            ("path_avg_cost", per(self.diag.path_cost, path.found)),
+            ("path_long_share", per(self.diag.long_paths, path.found)),
+            (
+                "path_long_avg_nodes",
+                per(self.diag.long_path_nodes, self.diag.long_paths),
+            ),
             (
                 "path_queue_wait_ticks",
                 per(path.wait_ticks, path.searches + path.skipped),

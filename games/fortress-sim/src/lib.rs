@@ -39,6 +39,8 @@ const HAUL_PRIORITY: i32 = 2;
 const FOOD_PRIORITY: i32 = 10;
 const CLEAR_PRIORITY: i32 = 6;
 const MAX_ROUTE_FAILURES: u8 = 3;
+/// Diagnostic threshold for long paths, in nodes.
+const LONG_PATH: usize = 100;
 pub(crate) const STOCKPILE_CAPACITY: usize = 1 << 16;
 const SOURCE_COMMAND: u8 = 0;
 const SOURCE_RESIDENT: u8 = 1;
@@ -102,6 +104,9 @@ pub(crate) struct Diagnostics {
     pub changed_chunks: u64,
     pub last_changed_chunks: u64,
     pub lowest_level: i32,
+    pub path_cost: u64,
+    pub long_paths: u64,
+    pub long_path_nodes: u64,
 }
 
 /// Path search in the configured mode. The hierarchical mode falls back to A*
@@ -464,6 +469,12 @@ impl FortressSim {
     }
 
     fn spawn_item(&mut self, at: Pos3, kind: ItemKind, material: u16) -> Option<ItemId> {
+        // Stockpile slots hold one item; spawns there move like drops.
+        let at = if self.is_stockpile(at) {
+            self.drop_position(at)
+        } else {
+            at
+        };
         let id = self.items.create()?;
         self.icols
             .push(ItemLocation::Ground(at), kind, material, None);
@@ -783,7 +794,9 @@ impl FortressSim {
                         if self.stockpiles.get(at) == Some(&p) {
                             return;
                         }
+                        // A slot holds at most one item, so stacked tiles are not designated.
                         if self.world.get(p).is_some_and(|t| standable(*t))
+                            && self.item_index.count_at(p, 2) < 2
                             && self.stockpiles.len() < STOCKPILE_CAPACITY
                         {
                             self.stockpiles.insert(at, p);
@@ -1125,6 +1138,7 @@ impl FortressSim {
         let rcols = &mut self.rcols;
         let residents = &self.residents;
         let paths = &mut self.paths;
+        let diag = &mut self.diag;
         let stats = self.queue.process(
             self.tick,
             self.config.path_budget_per_tick,
@@ -1138,9 +1152,14 @@ impl FortressSim {
                 };
                 let route = &mut rcols.route[slot];
                 match outcome.result {
-                    PathResult::Found { .. }
+                    PathResult::Found { cost }
                         if nodes.len() <= cap && nodes.len() <= usize::from(u16::MAX) =>
                     {
+                        diag.path_cost += u64::from(cost);
+                        if nodes.len() >= LONG_PATH {
+                            diag.long_paths += 1;
+                            diag.long_path_nodes += nodes.len() as u64;
+                        }
                         let base = request.key.index as usize * cap;
                         for (i, p) in nodes.iter().enumerate() {
                             paths[base + i] = world.index(*p).unwrap_or(0) as u32;

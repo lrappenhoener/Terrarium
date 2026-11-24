@@ -176,17 +176,23 @@ impl<K: Copy + Ord> CategoryIndex<K> {
 
     /// Whether any indexed object of any category lies exactly at `pos`.
     pub fn any_at(&self, pos: Pos3) -> bool {
+        self.count_at(pos, 1) > 0
+    }
+
+    /// Objects of all categories exactly at `pos`, counting at most `limit`.
+    pub fn count_at(&self, pos: Pos3, limit: u32) -> u32 {
         let cell = self.cell(pos);
-        (0..self.categories).any(|category| {
+        let mut count = 0;
+        for category in 0..self.categories {
             let mut slot = self.heads[self.list(cell, category)];
-            while slot != NONE {
+            while slot != NONE && count < limit {
                 if self.entries[slot as usize].is_some_and(|e| e.pos == pos) {
-                    return true;
+                    count += 1;
                 }
                 slot = self.next[slot as usize];
             }
-            false
-        })
+        }
+        count
     }
 
     /// Nearest accepted object of `category` by `(index_distance, key)`. Cells are
