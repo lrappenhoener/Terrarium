@@ -21,6 +21,13 @@ struct Entry<K> {
     list: u32,
 }
 
+/// Search bounds of `nearest_any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub cells: u32,
+    pub candidates: u32,
+}
+
 /// Outcome of a nearest-object query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Nearest<K> {
@@ -195,6 +202,22 @@ impl<K: Copy + Ord> CategoryIndex<K> {
         count
     }
 
+    /// Calls `visit` for every object of `category` exactly at `pos`.
+    pub fn for_each_at(&self, pos: Pos3, category: u8, mut visit: impl FnMut(K)) {
+        if category >= self.categories {
+            return;
+        }
+        let mut slot = self.heads[self.list(self.cell(pos), category)];
+        while slot != NONE {
+            if let Some(entry) = self.entries[slot as usize]
+                && entry.pos == pos
+            {
+                visit(entry.key);
+            }
+            slot = self.next[slot as usize];
+        }
+    }
+
     /// Nearest accepted object of `category` by `(index_distance, key)`. Cells are
     /// visited in Chebyshev rings around `from`; the search stops once the lower
     /// bound of the next ring exceeds the best distance, so a complete result equals
@@ -204,6 +227,31 @@ impl<K: Copy + Ord> CategoryIndex<K> {
         from: Pos3,
         category: u8,
         max_cells: u32,
+        accept: impl FnMut(K, Pos3) -> bool,
+    ) -> Nearest<K> {
+        if category >= 64 || category >= self.categories {
+            return Nearest {
+                found: None,
+                complete: true,
+                cells: 0,
+                candidates: 0,
+            };
+        }
+        let limits = Limits {
+            cells: max_cells,
+            candidates: u32::MAX,
+        };
+        self.nearest_any(from, 1 << category, limits, accept)
+    }
+
+    /// Like `nearest` over every category in the bit mask `categories` (categories
+    /// below 64). Besides the cells, `limits.candidates` bounds the inspected objects;
+    /// hitting either limit returns an incomplete result.
+    pub fn nearest_any(
+        &self,
+        from: Pos3,
+        categories: u64,
+        limits: Limits,
         mut accept: impl FnMut(K, Pos3) -> bool,
     ) -> Nearest<K> {
         let mut result = Nearest {
@@ -212,9 +260,13 @@ impl<K: Copy + Ord> CategoryIndex<K> {
             cells: 0,
             candidates: 0,
         };
-        if self.count(category) == 0 {
+        let wanted: u64 = (0..self.categories.min(64))
+            .filter(|&c| categories & (1 << c) != 0 && self.count(c) > 0)
+            .fold(0, |mask, c| mask | 1 << c);
+        if wanted == 0 {
             return result;
         }
+        let max_cells = limits.cells;
         let (cx, cy, cz) = self.cell(from);
         let max_ring = cx
             .max(self.columns - 1 - cx)
@@ -258,8 +310,10 @@ impl<K: Copy + Ord> CategoryIndex<K> {
                         if !(0..self.columns).contains(&x) {
                             continue;
                         }
-                        let list = self.list((x, y, z), category);
-                        if self.counts[list] == 0 {
+                        let occupied = (0..self.categories.min(64)).any(|c| {
+                            wanted & (1 << c) != 0 && self.counts[self.list((x, y, z), c)] != 0
+                        });
+                        if !occupied {
                             continue;
                         }
                         if result.cells >= max_cells {
@@ -278,19 +332,28 @@ impl<K: Copy + Ord> CategoryIndex<K> {
                         if result.found.is_some_and(|(best, _, _)| gap > best) {
                             continue;
                         }
-                        let mut slot = self.heads[list];
-                        while slot != NONE {
-                            if let Some(entry) = self.entries[slot as usize] {
-                                result.candidates += 1;
-                                let distance = index_distance(from, entry.pos);
-                                let better = result
-                                    .found
-                                    .is_none_or(|(d, k, _)| (distance, entry.key) < (d, k));
-                                if better && accept(entry.key, entry.pos) {
-                                    result.found = Some((distance, entry.key, entry.pos));
-                                }
+                        for category in 0..self.categories.min(64) {
+                            if wanted & (1 << category) == 0 {
+                                continue;
                             }
-                            slot = self.next[slot as usize];
+                            let mut slot = self.heads[self.list((x, y, z), category)];
+                            while slot != NONE {
+                                if let Some(entry) = self.entries[slot as usize] {
+                                    if result.candidates >= limits.candidates {
+                                        result.complete = false;
+                                        return result;
+                                    }
+                                    result.candidates += 1;
+                                    let distance = index_distance(from, entry.pos);
+                                    let better = result
+                                        .found
+                                        .is_none_or(|(d, k, _)| (distance, entry.key) < (d, k));
+                                    if better && accept(entry.key, entry.pos) {
+                                        result.found = Some((distance, entry.key, entry.pos));
+                                    }
+                                }
+                                slot = self.next[slot as usize];
+                            }
                         }
                     }
                 }
@@ -381,5 +444,80 @@ mod tests {
         assert!(index.any_at(Pos3::new(63, 63, 0)) && !index.any_at(Pos3::new(62, 63, 0)));
         assert!(!index.insert(8, 0, Pos3::new(0, 0, 0), 0));
         assert!(!index.insert(0, 0, Pos3::new(0, 0, 0), 1));
+    }
+}
+
+#[cfg(test)]
+mod any_tests {
+    use super::*;
+    use crate::rng::{SystemRng, below};
+
+    #[test]
+    fn nearest_any_matches_brute_force_over_category_sets() {
+        let (w, h, d) = (60, 60, 16);
+        let capacity = 500u32;
+        for seed in [3, 5, 8] {
+            let mut rng = SystemRng::new(seed, 13);
+            let mut index: CategoryIndex<u32> = CategoryIndex::new(w, h, d, 6, capacity).unwrap();
+            let mut model: Vec<Option<(Pos3, u8)>> = vec![None; capacity as usize];
+            for step in 0..4000u32 {
+                let slot = below(rng.next_u64(), u64::from(capacity)) as u32;
+                if below(rng.next_u64(), 4) == 0 {
+                    index.remove(slot);
+                    model[slot as usize] = None;
+                } else {
+                    let pos = Pos3::new(
+                        below(rng.next_u64(), w as u64) as i32,
+                        below(rng.next_u64(), h as u64) as i32,
+                        below(rng.next_u64(), d as u64) as i32,
+                    );
+                    let category = below(rng.next_u64(), 6) as u8;
+                    index.insert(slot, slot, pos, category);
+                    model[slot as usize] = Some((pos, category));
+                }
+                if step % 11 == 0 {
+                    let from = Pos3::new(
+                        below(rng.next_u64(), w as u64) as i32,
+                        below(rng.next_u64(), h as u64) as i32,
+                        below(rng.next_u64(), d as u64) as i32,
+                    );
+                    let mask = below(rng.next_u64(), 64);
+                    let accept = |key: u32, _: Pos3| !key.is_multiple_of(5);
+                    let expected = model
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(k, e)| e.map(|(p, c)| (k as u32, p, c)))
+                        .filter(|&(k, p, c)| mask & (1 << c) != 0 && accept(k, p))
+                        .map(|(k, p, _)| (index_distance(from, p), k, p))
+                        .min_by_key(|&(dist, k, _)| (dist, k));
+                    let unlimited = Limits {
+                        cells: u32::MAX,
+                        candidates: u32::MAX,
+                    };
+                    let result = index.nearest_any(from, mask, unlimited, accept);
+                    assert!(result.complete);
+                    assert_eq!(result.found, expected, "seed {seed} step {step}");
+                    let tight = Limits {
+                        cells: u32::MAX,
+                        candidates: 3,
+                    };
+                    let limited = index.nearest_any(from, mask, tight, accept);
+                    assert!(limited.candidates <= 3);
+                    if limited.complete {
+                        assert_eq!(limited.found, expected);
+                    }
+                }
+            }
+            let mut at = Vec::new();
+            let probe = model.iter().flatten().next().map(|e| e.0).unwrap();
+            for category in 0..6 {
+                index.for_each_at(probe, category, |k| at.push(k));
+            }
+            at.sort_unstable();
+            let expected: Vec<u32> = (0..capacity)
+                .filter(|&k| model[k as usize].is_some_and(|(p, _)| p == probe))
+                .collect();
+            assert_eq!(at, expected);
+        }
     }
 }

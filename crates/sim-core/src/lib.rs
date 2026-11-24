@@ -10,6 +10,7 @@ pub mod intent;
 pub mod jobs;
 pub mod path;
 pub mod physics;
+pub mod relation;
 pub mod rng;
 pub mod schedule;
 pub mod space;

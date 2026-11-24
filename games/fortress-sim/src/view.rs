@@ -30,7 +30,12 @@ pub struct ItemView {
     pub pos: Pos3,
     pub kind: ItemKind,
     pub material: u16,
+    pub quantity: u32,
+    pub quality: u8,
+    pub wear: u16,
     pub carried_by: Option<u64>,
+    /// Container holding the item.
+    pub container: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,19 +178,31 @@ impl View<'_> {
         let sim = self.sim;
         for id in sim.items.iter_by_id() {
             let Some(slot) = sim.islot(id) else { continue };
-            let (pos, carried_by) = match sim.icols.location[slot] {
+            let (outer, container) = match sim.icols.location[slot] {
+                ItemLocation::Inside(c) => match sim.islot(c) {
+                    Some(cslot) => (sim.icols.location[cslot], Some(c.to_u64())),
+                    None => continue,
+                },
+                location => (location, None),
+            };
+            let (pos, carried_by) = match outer {
                 ItemLocation::Ground(p) => (p, None),
                 ItemLocation::Carried(holder) => match sim.rslot(holder) {
                     Some(rslot) => (sim.rcols.position[rslot], Some(holder.to_u64())),
                     None => continue,
                 },
+                ItemLocation::Inside(_) => continue,
             };
             out.push(ItemView {
                 id: id.to_u64(),
                 pos,
                 kind: sim.icols.kind[slot],
                 material: sim.icols.material[slot],
+                quantity: sim.icols.quantity[slot],
+                quality: sim.icols.quality[slot],
+                wear: sim.icols.wear[slot],
                 carried_by,
+                container,
             });
         }
     }

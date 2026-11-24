@@ -129,6 +129,9 @@ pub struct FortressConfig {
     pub pathfinding: Pathfinding,
     pub physics: PhysicsConfig,
     pub haul_scan_interval: u64,
+    /// Bounds of each item search in the category index: chunk cells and items.
+    pub item_search_cells: u32,
+    pub item_search_candidates: u32,
     pub debug_shuffle_slots: bool,
 }
 
@@ -174,6 +177,8 @@ impl Default for FortressConfig {
             pathfinding: Pathfinding::Astar,
             physics: PhysicsConfig::default(),
             haul_scan_interval: 64,
+            item_search_cells: 512,
+            item_search_candidates: 4_096,
             debug_shuffle_slots: false,
         }
     }
@@ -221,6 +226,8 @@ impl FortressConfig {
             || self.path_budget_per_tick == 0
             || self.path_expansion_limit == 0
             || self.haul_scan_interval == 0
+            || self.item_search_cells == 0
+            || self.item_search_candidates == 0
             || !(1..=7).contains(&self.physics.water_impassable_at)
             || !(1..=7).contains(&self.physics.magma_impassable_at)
             || self.physics.river_initial_level > 7
@@ -273,6 +280,8 @@ impl FortressConfig {
             self.job_inspect_limit,
             self.path_budget_per_tick,
             self.path_expansion_limit,
+            self.item_search_cells,
+            self.item_search_candidates,
         ] {
             hash.write_u32(value);
         }

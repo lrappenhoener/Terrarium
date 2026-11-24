@@ -56,6 +56,7 @@ struct State {
     energy: Vec<(u32, i32)>,
     heat_balance: crate::temperature::HeatBalance,
     support: Vec<(Pos3, u8)>,
+    ledger: Vec<crate::types::Ledger>,
 }
 
 /// Payload version 2 starts with this tag and the generator fingerprint. Version 1
@@ -159,6 +160,7 @@ impl FortressSim {
             energy: self.energy_cells(),
             heat_balance: self.heat_balance,
             support: self.support.pending(),
+            ledger: self.ledger.clone(),
         };
         let (version, hash) = world::generator_fingerprint(&self.config, &self.content);
         *out = postcard::to_allocvec(&(
@@ -287,6 +289,10 @@ impl FortressSim {
         for record in state.items {
             sim.icols.push_row(record.row);
         }
+        if state.ledger.len() != sim.ledger.len() {
+            return Err(fail("item ledger does not match the content"));
+        }
+        sim.ledger = state.ledger;
         sim.rebuild_item_index();
         let (w, d) = (sim.config.world_size_xy, sim.config.world_depth);
         sim.jobs = JobBoard::restore(
@@ -409,6 +415,14 @@ impl FortressSim {
         }
         for p in &self.stockpiles {
             writeln!(out, "stockpile:{},{},{}\t1", p.x, p.y, p.z).map_err(fail)?;
+        }
+        for (kind, entry) in self.ledger.iter().enumerate() {
+            writeln!(
+                out,
+                "ledger:{}\tproduced={} removed={}",
+                self.content.ids.items[kind], entry.produced, entry.removed
+            )
+            .map_err(fail)?;
         }
         for (index, tile) in self.tile_changes()? {
             if let Some(p) = self.world.pos(index as usize) {

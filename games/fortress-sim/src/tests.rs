@@ -186,7 +186,7 @@ fn golden_hash_after_two_thousand_scenario_ticks() {
     assert_eq!(sim.state_hash(), GOLDEN_ASTAR, "{:#018x}", sim.state_hash());
 }
 
-const GOLDEN_ASTAR: u64 = 0x61ad636b9d007ca9;
+const GOLDEN_ASTAR: u64 = 0x39026d0283a10d60;
 
 #[test]
 fn scenario_digs_in_and_reaches_the_bottom_of_the_shaft() {
@@ -297,7 +297,7 @@ fn sealed_ore_is_never_assigned_and_never_searched() {
 #[test]
 fn two_workers_one_stone_exactly_one_carries_it() {
     let mut sim = flat(calm());
-    sim.spawn_item(Pos3::new(6, 6, 1), kind(&sim, "stone"), 3);
+    sim.spawn_item(Pos3::new(6, 6, 1), kind(&sim, "stone"), 3, 1, 0);
     let stone = sim.items.iter_by_id().last().unwrap();
     sim.step(&[
         FortressCommand::Build {
@@ -344,7 +344,7 @@ fn a_wall_seals_jobs_and_digging_through_reopens_them() {
     set_wall(&mut sim, Pos3::new(20, 20, 1));
     sim.world.clear_changes();
     sim.connectivity = Connectivity::new(&sim.world);
-    sim.spawn_item(Pos3::new(2, 2, 1), kind(&sim, "stone"), 3);
+    sim.spawn_item(Pos3::new(2, 2, 1), kind(&sim, "stone"), 3, 1, 0);
     let (home, behind) = (Pos3::new(1, 1, 1), Pos3::new(19, 20, 1));
     assert!(sim.connectivity.reachable(home, behind));
     sim.step(&[FortressCommand::Build {
@@ -471,11 +471,11 @@ fn golden_small_snapshot_loads_and_continues() {
     let bytes = include_bytes!("../tests/fixtures/fortress-v4-small.bin");
     let mut sim = FortressSim::load_snapshot(bytes).unwrap();
     assert_eq!(sim.tick(), 300);
-    assert_eq!(sim.state_hash(), 0xf34484303eaa33cc);
+    assert_eq!(sim.state_hash(), 0x86f2ac0f9e6a226c);
     for _ in 300..601 {
         sim.step(&[]);
     }
-    assert_eq!(sim.state_hash(), 0xef492f67477cacee);
+    assert_eq!(sim.state_hash(), 0xaa62567e5cdce43b);
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn golden_hash_with_hierarchical_pathfinding() {
     assert!(sim.counters.dug >= 450);
 }
 
-const GOLDEN_HIERARCHICAL: u64 = 0xbbff8ba1f4629811;
+const GOLDEN_HIERARCHICAL: u64 = 0x7519e61a3cdbcc54;
 
 #[test]
 fn aborting_on_a_full_stockpile_drops_outside_it() {
@@ -511,11 +511,11 @@ fn aborting_on_a_full_stockpile_drops_outside_it() {
     }]);
     for y in 4..=14 {
         for x in 4..=14 {
-            sim.spawn_item(Pos3::new(x, y, 1), kind(&sim, "stone"), 3);
+            sim.spawn_item(Pos3::new(x, y, 1), kind(&sim, "stone"), 3, 1, 0);
         }
     }
     let carried = sim
-        .spawn_item(Pos3::new(1, 1, 1), kind(&sim, "ration"), 0)
+        .spawn_item(Pos3::new(1, 1, 1), kind(&sim, "ration"), 0, 1, 0)
         .unwrap();
     let id = sim.residents.iter_by_id().next().unwrap();
     let slot = sim.rslot(id).unwrap();
@@ -812,9 +812,9 @@ fn cavein_is_deterministic_shuffle_neutral_and_golden() {
     assert_eq!(hashes[1499], GOLDEN_CAVEIN, "{:#018x}", hashes[1499]);
 }
 
-const GOLDEN_FLOOD: u64 = 0x29cefa6aeab7578b;
-const GOLDEN_MAGMA: u64 = 0xb862286823dccccc;
-const GOLDEN_CAVEIN: u64 = 0xc21e120fd2d33901;
+const GOLDEN_FLOOD: u64 = 0x25fa64edca658e0c;
+const GOLDEN_MAGMA: u64 = 0xe37244e90f73fde7;
+const GOLDEN_CAVEIN: u64 = 0x3a19f7a85adf8313;
 
 #[test]
 fn save_load_survives_flowing_water_heat_and_sleep_transitions() {
@@ -1045,4 +1045,291 @@ fn snapshots_with_changed_content_are_rejected() {
         .to_string();
     assert!(error.contains("Inhalt geändert: Fingerabdruck"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn ground_units(sim: &FortressSim, kind: ItemKind) -> u64 {
+    (0..sim.icols.len())
+        .filter(|&slot| sim.icols.kind[slot] == kind)
+        .map(|slot| u64::from(sim.icols.quantity[slot]))
+        .sum()
+}
+
+#[test]
+fn stacks_split_merge_and_consume_conserve_units() {
+    use sim_core::rng::{SystemRng, below};
+    let mut sim = flat(calm());
+    let ration = kind(&sim, "ration");
+    let material = sim.content.ration_material;
+    let holder = sim.residents.iter_by_id().next().unwrap();
+    let first = sim
+        .spawn_item(Pos3::new(3, 3, 1), ration, material, 25, 0)
+        .unwrap();
+    sim.check_invariants().unwrap();
+    assert_eq!(ground_units(&sim, ration), 25);
+    let at = |sim: &FortressSim| -> Vec<(ItemId, u32)> {
+        let mut found: Vec<(ItemId, u32)> = sim
+            .items
+            .iter_by_id()
+            .filter(|&id| sim.icols.kind[sim.islot(id).unwrap()] == ration)
+            .map(|id| (id, sim.icols.quantity[sim.islot(id).unwrap()]))
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(
+        at(&sim).iter().map(|e| e.1).collect::<Vec<_>>(),
+        [10, 10, 5]
+    );
+    sim.ops.push(
+        (9, 0),
+        0,
+        EntityCommand::Spawn(Op::Split {
+            item: first,
+            amount: 4,
+        }),
+    );
+    sim.apply_ops();
+    assert_eq!(
+        at(&sim).iter().map(|e| e.1).collect::<Vec<_>>(),
+        [6, 10, 5, 4]
+    );
+    let stacks = at(&sim);
+    // Too large: 10 + 5 exceeds the stack size, nothing happens.
+    sim.ops.push(
+        (9, 1),
+        0,
+        EntityCommand::Spawn(Op::Merge {
+            from: stacks[2].0,
+            into: stacks[1].0,
+        }),
+    );
+    sim.ops.push(
+        (9, 2),
+        0,
+        EntityCommand::Spawn(Op::Merge {
+            from: stacks[3].0,
+            into: stacks[0].0,
+        }),
+    );
+    sim.apply_ops();
+    assert_eq!(
+        at(&sim).iter().map(|e| e.1).collect::<Vec<_>>(),
+        [10, 10, 5]
+    );
+    sim.consume_units(holder, first, 3);
+    sim.check_invariants().unwrap();
+    assert_eq!(ground_units(&sim, ration), 22);
+    let ledger = sim.ledger[usize::from(ration.0)];
+    assert_eq!((ledger.produced, ledger.removed), (25, 3));
+
+    let mut rng = SystemRng::new(77, 3);
+    for round in 0..400u32 {
+        let stacks = at(&sim);
+        match below(rng.next_u64(), 5) {
+            0 => {
+                let amount = 1 + below(rng.next_u64(), 15) as u32;
+                let p = Pos3::new(2 + below(rng.next_u64(), 3) as i32, 3, 1);
+                sim.spawn_item(p, ration, material, amount, 0);
+            }
+            1 if !stacks.is_empty() => {
+                let (item, quantity) = stacks[below(rng.next_u64(), stacks.len() as u64) as usize];
+                let amount = below(rng.next_u64(), u64::from(quantity) + 1) as u32;
+                sim.ops.push(
+                    (9, u64::from(round)),
+                    0,
+                    EntityCommand::Spawn(Op::Split { item, amount }),
+                );
+            }
+            2 if stacks.len() >= 2 => {
+                let a = stacks[below(rng.next_u64(), stacks.len() as u64) as usize].0;
+                let b = stacks[below(rng.next_u64(), stacks.len() as u64) as usize].0;
+                sim.ops.push(
+                    (9, u64::from(round)),
+                    0,
+                    EntityCommand::Spawn(Op::Merge { from: a, into: b }),
+                );
+            }
+            3 if !stacks.is_empty() => {
+                let (item, quantity) = stacks[below(rng.next_u64(), stacks.len() as u64) as usize];
+                let units = 1 + below(rng.next_u64(), u64::from(quantity)) as u32;
+                sim.consume_units(holder, item, units);
+            }
+            _ => {
+                if let Some(&(item, _)) = stacks.first() {
+                    sim.ops.push(
+                        (9, u64::from(round)),
+                        1,
+                        EntityCommand::Spawn(Op::DespawnItem(item)),
+                    );
+                }
+            }
+        }
+        sim.apply_ops();
+        sim.check_invariants().unwrap();
+        let ledger = sim.ledger[usize::from(ration.0)];
+        assert_eq!(ground_units(&sim, ration), ledger.produced - ledger.removed);
+    }
+}
+
+#[test]
+fn containers_keep_their_invariants_and_carry_their_contents() {
+    let mut sim = flat(calm());
+    let chest = kind(&sim, "chest");
+    let stone = kind(&sim, "stone");
+    let wood = GameContent::id_of(&sim.content.ids.materials, "oak_wood").unwrap();
+    let home = Pos3::new(5, 5, 1);
+    let container = sim.spawn_item(home, chest, wood, 1, 2).unwrap();
+    let second = sim.spawn_item(home, chest, wood, 1, 0).unwrap();
+    let mut stones = Vec::new();
+    for _ in 0..9 {
+        stones.push(sim.spawn_item(Pos3::new(9, 9, 1), stone, 3, 1, 0).unwrap());
+    }
+    for &s in &stones[..8] {
+        assert!(sim.put_into(s, container));
+    }
+    assert!(!sim.put_into(stones[8], container), "capacity 8");
+    assert!(!sim.put_into(second, container), "containers do not nest");
+    assert!(!sim.put_into(container, container));
+    sim.check_invariants().unwrap();
+    let stone_category = sim.content.stone;
+    let (_, nearest) = sim
+        .nearest_free_item(Pos3::new(4, 5, 1), stone_category)
+        .unwrap();
+    assert_eq!(
+        sim.item_ground(nearest),
+        Some(home),
+        "contents count at the container"
+    );
+
+    // Carrying the container hides its contents; dropping it moves them along.
+    let rid = sim.residents.iter_by_id().next().unwrap();
+    let rslot = sim.rslot(rid).unwrap();
+    sim.pick_up(rslot, rid, container);
+    sim.check_invariants().unwrap();
+    let (_, nearest) = sim
+        .nearest_free_item(Pos3::new(4, 5, 1), stone_category)
+        .unwrap();
+    assert_eq!(nearest, stones[8]);
+    let away = Pos3::new(12, 12, 1);
+    sim.drop_item(rslot, container, away);
+    sim.check_invariants().unwrap();
+    for &s in &stones[..8] {
+        assert_eq!(sim.item_ground(s), Some(away));
+        assert_eq!(sim.item_index.get(s.index).map(|e| e.1), Some(away));
+    }
+    // Removing the container leaves its contents on its tile.
+    sim.ops
+        .push((9, 0), 0, EntityCommand::Spawn(Op::DespawnItem(container)));
+    sim.apply_ops();
+    sim.check_invariants().unwrap();
+    for &s in &stones[..8] {
+        let slot = sim.islot(s).unwrap();
+        assert_eq!(sim.icols.location[slot], ItemLocation::Ground(away));
+    }
+}
+
+#[test]
+fn item_queries_match_brute_force_with_reachability() {
+    use sim_core::{
+        index::index_distance,
+        rng::{SystemRng, below},
+    };
+    for seed in [1u64, 2, 3] {
+        let config = FortressConfig {
+            item_search_cells: u32::MAX,
+            item_search_candidates: u32::MAX,
+            max_items: 2_000,
+            ..calm()
+        };
+        let mut sim = flat(config);
+        let w = sim.config.world_size_xy;
+        // A wall splits the floor into two regions.
+        for y in 0..w {
+            for z in 1..3 {
+                sim.world
+                    .set(Pos3::new(12, y, z), Tile::new(TileKind::Solid, false, 3));
+            }
+        }
+        sim.world.clear_changes();
+        sim.connectivity = Connectivity::new(&sim.world);
+        let mut rng = SystemRng::new(seed, 5);
+        let kinds = sim.content.items.len() as u64;
+        let materials = sim.content.materials.len() as u64;
+        let chest = kind(&sim, "chest");
+        let mut containers = Vec::new();
+        let holder = sim.residents.iter_by_id().next().unwrap();
+        for i in 0..600u32 {
+            let p = Pos3::new(
+                below(rng.next_u64(), w as u64) as i32,
+                below(rng.next_u64(), w as u64) as i32,
+                1,
+            );
+            if p.x == 12 {
+                continue;
+            }
+            let k = if i % 40 == 0 {
+                chest
+            } else {
+                ItemKind(below(rng.next_u64(), kinds) as u16)
+            };
+            let stack = sim.content.items[usize::from(k.0)].stack;
+            let quantity = 1 + below(rng.next_u64(), u64::from(stack)) as u32;
+            let material = below(rng.next_u64(), materials) as u16;
+            let Some(id) = sim.spawn_item(p, k, material, quantity, 0) else {
+                continue;
+            };
+            if k == chest {
+                containers.push(id);
+            } else if !containers.is_empty() && below(rng.next_u64(), 6) == 0 {
+                let c = containers[below(rng.next_u64(), containers.len() as u64) as usize];
+                sim.put_into(id, c);
+            }
+            if below(rng.next_u64(), 9) == 0 {
+                sim.reservations.claim(ResKey::Item(id), holder, 1, 0);
+            }
+        }
+        // Reservations without tasks only exclude items here; invariants would reject them.
+        sim.reservations.resolve(sim.tick, |_, _| {});
+        let categories = sim.content.categories.len() as u64;
+        for _ in 0..300 {
+            let at = Pos3::new(
+                below(rng.next_u64(), w as u64) as i32,
+                below(rng.next_u64(), w as u64) as i32,
+                1,
+            );
+            if at.x == 12 {
+                continue;
+            }
+            let what = if below(rng.next_u64(), 2) == 0 {
+                content::Ingredient::Category(below(rng.next_u64(), categories) as u8)
+            } else {
+                content::Ingredient::Item(below(rng.next_u64(), kinds) as u16)
+            };
+            let input = content::Input {
+                what,
+                amount: 1,
+                raw: below(rng.next_u64(), 2) == 0,
+            };
+            let material =
+                (below(rng.next_u64(), 3) == 0).then(|| below(rng.next_u64(), materials) as u16);
+            let expected = sim
+                .items
+                .iter_by_id()
+                .filter_map(|id| {
+                    let slot = sim.islot(id)?;
+                    let p = sim.item_ground(id)?;
+                    let fits = sim.content.accepts(&input, sim.icols.kind[slot].0)
+                        && material.is_none_or(|m| sim.icols.material[slot] == m)
+                        && !sim.reservations.is_reserved(ResKey::Item(id))
+                        && sim.connectivity.reachable(at, p);
+                    fits.then(|| (index_distance(at, p), id))
+                })
+                .min();
+            assert_eq!(
+                sim.nearest_item(at, &input, material, &[]),
+                expected,
+                "seed {seed}"
+            );
+        }
+    }
 }

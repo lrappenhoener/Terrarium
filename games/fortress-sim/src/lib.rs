@@ -22,13 +22,14 @@ pub use types::{BuildKind, DigMode, FortressCommand, ItemKind};
 
 use sim_core::{
     entity::{EntityCommand, EntityCommandBuffer, EntityTable, SlotPermutation},
-    index::CategoryIndex,
+    index::{CategoryIndex, Limits},
     jobs::{Assigner, JobBoard, JobId, JobState, Reservations, job_distance},
     path::{
         AStar, Connectivity, HierarchicalPathfinder, PathRequestQueue, PathResult, QueueStats,
         SearchOutcome,
     },
     physics::{ActiveChunkSet, ChunkDoubleBuffer},
+    relation::Membership,
     rng::{below, stateless_u64},
     schedule::{EventQueue, staggered},
     space::{ChunkId, ChunkedGrid3, standable, walk_neighbors},
@@ -38,8 +39,8 @@ use sim_core::{
 use sim_host::{NoopProbe, PhaseProbe, SimError, SimMetrics, Simulation};
 
 use types::{
-    Death, Event, Item, ItemId, ItemLocation, JobKind, Needs, Op, ResKey, Resident, ResidentId,
-    Route, RouteStatus, Task, Vitals,
+    Death, Event, Item, ItemId, ItemLocation, JobKind, Ledger, Needs, Op, ResKey, Resident,
+    ResidentId, Route, RouteStatus, Task, Vitals,
 };
 
 const DIG_PRIORITY: i32 = 5;
@@ -55,6 +56,9 @@ pub(crate) const STOCKPILE_CAPACITY: usize = 1 << 16;
 const SOURCE_COMMAND: u8 = 0;
 const SOURCE_RESIDENT: u8 = 1;
 pub(crate) const SOURCE_EVENT: u8 = 2;
+const SOURCE_STACK: u8 = 3;
+/// Highest item quality.
+pub(crate) const MAX_QUALITY: u8 = 5;
 
 sim_core::entity_columns! {
     struct ResidentColumns, row ResidentRow {
@@ -73,6 +77,9 @@ sim_core::entity_columns! {
         location: ItemLocation,
         kind: ItemKind,
         material: u16,
+        quantity: u32,
+        quality: u8,
+        wear: u16,
         haul: Option<JobId>,
     }
 }
@@ -195,6 +202,9 @@ pub struct FortressSim {
     paths: Vec<u32>,
     items: EntityTable<Item>,
     icols: ItemColumns,
+    /// Derived container membership by item index; rebuilt on load.
+    contents: Membership,
+    ledger: Vec<Ledger>,
     fluid: ChunkedGrid3<u8>,
     fluid_active: ActiveChunkSet,
     balance: fluids::FluidBalance,
@@ -220,6 +230,7 @@ pub struct FortressSim {
 /// Reused buffers. Their contents never survive a phase.
 struct Scratch {
     chunks: Vec<ChunkId>,
+    members: Vec<u32>,
     fluid_marks: Vec<bool>,
     fluid_changed: Vec<ChunkId>,
     fluid_chunks: Vec<ChunkId>,
@@ -263,6 +274,7 @@ impl Scratch {
         let chunk_count = tiles / sim_core::physics::CHUNK_VOLUME + 64;
         Self {
             chunks: Vec::with_capacity(4096),
+            members: Vec::with_capacity(256),
             fluid_marks: vec![false; chunk_count * 2],
             fluid_changed: Vec::with_capacity(chunk_count * 2),
             fluid_chunks: Vec::with_capacity(chunk_count * 2),
@@ -429,7 +441,10 @@ impl FortressSim {
         let connectivity = Connectivity::new(&world);
         let pathfinder = Pathfinder::new(config.pathfinding, &world, config.path_expansion_limit);
         let (w, d) = (config.world_size_xy, config.world_depth);
+        let kinds = content.items.len();
         Ok(Self {
+            contents: Membership::new(items as usize),
+            ledger: vec![Ledger::default(); kinds],
             seed,
             tick: 0,
             connectivity,
@@ -663,19 +678,46 @@ impl FortressSim {
         Some(id)
     }
 
-    fn spawn_item(&mut self, at: Pos3, kind: ItemKind, material: u16) -> Option<ItemId> {
+    /// Creates `quantity` units as stacks of at most the kind's stack size and
+    /// books them as produced. Returns the first stack.
+    fn spawn_item(
+        &mut self,
+        at: Pos3,
+        kind: ItemKind,
+        material: u16,
+        quantity: u32,
+        quality: u8,
+    ) -> Option<ItemId> {
         // Stockpile slots hold one item; spawns there move like drops.
         let at = if self.is_stockpile(at) {
             self.drop_position(at)
         } else {
             at
         };
-        let id = self.items.create()?;
-        self.icols
-            .push(ItemLocation::Ground(at), kind, material, None);
-        self.index_item(id);
-        self.ensure_haul(id);
-        Some(id)
+        let stack = self.content.item(kind.0).map_or(1, |d| d.stack).max(1);
+        let mut first = None;
+        let mut left = quantity.max(1);
+        while left > 0 {
+            let units = left.min(stack);
+            let Some(id) = self.items.create() else { break };
+            self.icols.push(
+                ItemLocation::Ground(at),
+                kind,
+                material,
+                units,
+                quality.min(MAX_QUALITY),
+                0,
+                None,
+            );
+            if let Some(entry) = self.ledger.get_mut(usize::from(kind.0)) {
+                entry.produced += u64::from(units);
+            }
+            self.index_item(id);
+            self.ensure_haul(id);
+            first.get_or_insert(id);
+            left -= units;
+        }
+        first
     }
 
     /// Creates a haul job for a loose item outside stockpiles.
@@ -723,8 +765,7 @@ impl FortressSim {
             && let Some(islot) = self.islot(item)
         {
             let at = self.drop_position(self.rcols.position[slot]);
-            self.icols.location[islot] = ItemLocation::Ground(at);
-            self.index_item(item);
+            self.place_on_ground(item, at);
             if let Task::Haul { job, .. } = task {
                 // The haul job is bound to the item's former position.
                 self.icols.haul[islot] = None;
@@ -740,28 +781,96 @@ impl FortressSim {
         self.rcols.work[slot] = 0;
     }
 
-    /// Synchronizes the category index with the item's current location.
+    /// Synchronizes the category index with the item's current location. Items in a
+    /// container on the ground count at the container's tile; carried items and the
+    /// contents of carried containers are not indexed.
     pub(crate) fn index_item(&mut self, id: ItemId) {
-        match self.islot(id) {
-            Some(slot) => match self.icols.location[slot] {
-                ItemLocation::Ground(p) => {
-                    let category = self.content.category_of(self.icols.kind[slot].0);
-                    self.item_index.insert(id.index, id, p, category);
-                }
-                ItemLocation::Carried(_) => {
-                    self.item_index.remove(id.index);
-                }
-            },
+        let entry = self.islot(id).and_then(|slot| {
+            let p = self.item_ground(id)?;
+            Some((p, self.content.category_of(self.icols.kind[slot].0)))
+        });
+        match entry {
+            Some((p, category)) => {
+                self.item_index.insert(id.index, id, p, category);
+            }
             None => {
                 self.item_index.remove(id.index);
             }
         }
     }
 
+    /// Re-indexes the contents of a container after it moved.
+    fn reindex_contents(&mut self, container: ItemId) {
+        if self.contents.count(container.index) == 0 {
+            return;
+        }
+        let mut members = std::mem::take(&mut self.scratch.members);
+        members.clear();
+        members.extend(self.contents.children(container.index));
+        for &index in &members {
+            if let Some(child) = self.items.id_at(index) {
+                self.index_item(child);
+            }
+        }
+        self.scratch.members = members;
+    }
+
+    /// Rebuilds container membership and the category index from item locations.
     pub(crate) fn rebuild_item_index(&mut self) {
         self.item_index.clear();
-        for id in self.items.iter_by_id().collect::<Vec<_>>() {
+        self.contents.clear();
+        let ids: Vec<ItemId> = self.items.iter_by_id().collect();
+        for &id in &ids {
+            if let Some(slot) = self.islot(id)
+                && let ItemLocation::Inside(container) = self.icols.location[slot]
+            {
+                self.contents.insert(id.index, container.index);
+            }
+        }
+        for id in ids {
             self.index_item(id);
+        }
+    }
+
+    /// Puts `item` into `container`, leaving its previous place.
+    #[allow(dead_code, reason = "used by bulk hauling and tests")]
+    pub(crate) fn put_into(&mut self, item: ItemId, container: ItemId) -> bool {
+        let (Some(slot), Some(cslot)) = (self.islot(item), self.islot(container)) else {
+            return false;
+        };
+        let capacity = self
+            .content
+            .item(self.icols.kind[cslot].0)
+            .map_or(0, |d| u32::from(d.capacity));
+        let nested = !matches!(
+            self.icols.location[cslot],
+            ItemLocation::Ground(_) | ItemLocation::Carried(_)
+        );
+        let is_container = self
+            .content
+            .item(self.icols.kind[slot].0)
+            .is_some_and(|d| d.capacity > 0);
+        if item == container
+            || nested
+            || is_container
+            || self.contents.count(container.index) >= capacity
+        {
+            return false;
+        }
+        self.icols.location[slot] = ItemLocation::Inside(container);
+        self.contents.insert(item.index, container.index);
+        self.index_item(item);
+        true
+    }
+
+    /// Places an item on the ground, out of any container; a container's contents
+    /// follow it.
+    pub(crate) fn place_on_ground(&mut self, item: ItemId, at: Pos3) {
+        if let Some(slot) = self.islot(item) {
+            self.contents.remove(item.index);
+            self.icols.location[slot] = ItemLocation::Ground(at);
+            self.index_item(item);
+            self.reindex_contents(item);
         }
     }
 
@@ -784,19 +893,56 @@ impl FortressSim {
     /// Nearest loose, unreserved and reachable item by `(distance, id)`, the same
     /// minimum as an exhaustive scan.
     fn nearest_free_item(&self, at: Pos3, category: u8) -> Option<(u32, ItemId)> {
+        let input = content::Input {
+            what: content::Ingredient::Category(category),
+            amount: 1,
+            raw: false,
+        };
+        self.nearest_item(at, &input, None, &[])
+    }
+
+    pub(crate) fn search_limits(&self) -> Limits {
+        Limits {
+            cells: self.config.item_search_cells,
+            candidates: self.config.item_search_candidates,
+        }
+    }
+
+    /// Nearest free, reachable item that fits `input` and, if given, `material`,
+    /// excluding `skip`; minimum by `(distance, id)` within the search limits.
+    pub(crate) fn nearest_item(
+        &self,
+        at: Pos3,
+        input: &content::Input,
+        material: Option<u16>,
+        skip: &[ItemId],
+    ) -> Option<(u32, ItemId)> {
+        let categories = match input.what {
+            content::Ingredient::Category(c) => self.content.descendants(c),
+            content::Ingredient::Item(kind) => 1 << self.content.category_of(kind),
+        };
         self.item_index
-            .nearest(at, category, u32::MAX, |item, p| {
-                !self.reservations.is_reserved(ResKey::Item(item))
+            .nearest_any(at, categories, self.search_limits(), |item, p| {
+                self.islot(item).is_some_and(|slot| {
+                    self.content.accepts(input, self.icols.kind[slot].0)
+                        && material.is_none_or(|m| self.icols.material[slot] == m)
+                }) && !skip.contains(&item)
+                    && !self.reservations.is_reserved(ResKey::Item(item))
                     && self.connectivity.reachable(at, p)
             })
             .found
             .map(|(distance, item, _)| (distance, item))
     }
 
-    fn item_ground(&self, id: ItemId) -> Option<Pos3> {
+    /// Ground tile of an item, or of the container on the ground that holds it.
+    pub(crate) fn item_ground(&self, id: ItemId) -> Option<Pos3> {
         match self.icols.location[self.islot(id)?] {
             ItemLocation::Ground(p) => Some(p),
             ItemLocation::Carried(_) => None,
+            ItemLocation::Inside(container) => match self.icols.location[self.islot(container)?] {
+                ItemLocation::Ground(p) => Some(p),
+                _ => None,
+            },
         }
     }
 
@@ -1494,12 +1640,7 @@ impl FortressSim {
                         self.scratch.abort.push(id);
                     } else if tick_work(&mut self.rcols.work[slot], self.config.eat_ticks) {
                         self.rcols.needs[slot].hunger = 0;
-                        self.remove_haul(item);
-                        self.ops.push(
-                            (SOURCE_RESIDENT, id.to_u64()),
-                            0,
-                            EntityCommand::Spawn(Op::DespawnItem(item)),
-                        );
+                        self.consume_units(id, item, 1);
                         self.counters.eaten += 1;
                         self.release_and_idle(slot, id);
                     }
@@ -1533,6 +1674,8 @@ impl FortressSim {
                                     at: target,
                                     kind: ItemKind(kind),
                                     material: tile.material,
+                                    quantity: 1,
+                                    quality: 0,
                                 }),
                             );
                         }
@@ -1649,21 +1792,85 @@ impl FortressSim {
         }
     }
 
+    /// Removes `units` from a stack; the last unit removes the item at the tick end.
+    /// `holder` is the resident whose task consumes the units.
+    pub(crate) fn consume_units(&mut self, holder: ResidentId, item: ItemId, units: u32) {
+        let Some(slot) = self.islot(item) else { return };
+        let kind = usize::from(self.icols.kind[slot].0);
+        let quantity = self.icols.quantity[slot];
+        if units < quantity {
+            self.icols.quantity[slot] = quantity - units;
+            if let Some(entry) = self.ledger.get_mut(kind) {
+                entry.removed += u64::from(units);
+            }
+            self.reservations.release(ResKey::Item(item));
+        } else {
+            self.remove_haul(item);
+            self.ops.push(
+                (SOURCE_RESIDENT, holder.to_u64()),
+                item.index,
+                EntityCommand::Spawn(Op::DespawnItem(item)),
+            );
+        }
+    }
+
     fn pick_up(&mut self, slot: usize, id: ResidentId, item: ItemId) {
         if let Some(islot) = self.islot(item) {
+            self.contents.remove(item.index);
             self.icols.location[islot] = ItemLocation::Carried(id);
             self.item_index.remove(item.index);
+            self.reindex_contents(item);
             self.rcols.carried[slot] = Some(item);
             self.rcols.route[slot] = Route::NONE;
         }
     }
 
     fn drop_item(&mut self, slot: usize, item: ItemId, at: Pos3) {
-        if let Some(islot) = self.islot(item) {
-            self.icols.location[islot] = ItemLocation::Ground(at);
-            self.index_item(item);
-        }
+        self.place_on_ground(item, at);
+        self.merge_into_stack(item);
         self.rcols.carried[slot] = None;
+    }
+
+    /// Schedules merging a dropped stack into a compatible stack on the same tile:
+    /// same kind, material and quality, unreserved, with room. The lowest ID wins.
+    fn merge_into_stack(&mut self, item: ItemId) {
+        let Some(slot) = self.islot(item) else { return };
+        let ItemLocation::Ground(at) = self.icols.location[slot] else {
+            return;
+        };
+        let (kind, material, quality, quantity) = (
+            self.icols.kind[slot],
+            self.icols.material[slot],
+            self.icols.quality[slot],
+            self.icols.quantity[slot],
+        );
+        let stack = self.content.item(kind.0).map_or(1, |d| d.stack);
+        if stack <= 1 {
+            return;
+        }
+        let mut target: Option<ItemId> = None;
+        self.item_index
+            .for_each_at(at, self.content.category_of(kind.0), |other| {
+                let compatible = other != item
+                    && self.islot(other).is_some_and(|o| {
+                        self.icols.location[o] == ItemLocation::Ground(at)
+                            && self.icols.kind[o] == kind
+                            && self.icols.material[o] == material
+                            && self.icols.quality[o] == quality
+                            && self.icols.quantity[o] + quantity <= stack
+                    })
+                    && !self.reservations.is_reserved(ResKey::Item(other));
+                if compatible && target.is_none_or(|t| other < t) {
+                    target = Some(other);
+                }
+            });
+        if let Some(into) = target {
+            self.ops.push(
+                (SOURCE_STACK, item.to_u64()),
+                0,
+                EntityCommand::Spawn(Op::Merge { from: item, into }),
+            );
+        }
     }
 
     fn lifecycle(&mut self) {
@@ -1724,6 +1931,95 @@ impl FortressSim {
         }
     }
 
+    /// Removes an item and books its units as removed. A container's contents stay
+    /// where the container was.
+    fn despawn_item(&mut self, item: ItemId) {
+        let Some(slot) = self.islot(item) else { return };
+        self.remove_haul(item);
+        self.reservations.release(ResKey::Item(item));
+        if let Some(at) = self.item_ground(item) {
+            let mut members = std::mem::take(&mut self.scratch.members);
+            members.clear();
+            members.extend(self.contents.children(item.index));
+            members.sort_unstable();
+            for &index in &members {
+                if let Some(child) = self.items.id_at(index) {
+                    self.place_on_ground(child, at);
+                }
+            }
+            self.scratch.members = members;
+        }
+        let kind = usize::from(self.icols.kind[slot].0);
+        if let Some(entry) = self.ledger.get_mut(kind) {
+            entry.removed += u64::from(self.icols.quantity[slot]);
+        }
+        self.contents.remove(item.index);
+        if let Some(slot) = self.items.destroy(item) {
+            self.icols.swap_remove(slot);
+            self.item_index.remove(item.index);
+        }
+    }
+
+    /// Moves all units of `from` onto `into` if both still form compatible,
+    /// unreserved stacks on one tile with room.
+    fn merge_stacks(&mut self, from: ItemId, into: ItemId) {
+        let (Some(a), Some(b)) = (self.islot(from), self.islot(into)) else {
+            return;
+        };
+        let kind = self.icols.kind[a];
+        let stack = self.content.item(kind.0).map_or(1, |d| d.stack);
+        let fits = from != into
+            && matches!(self.icols.location[a], ItemLocation::Ground(_))
+            && self.icols.location[a] == self.icols.location[b]
+            && kind == self.icols.kind[b]
+            && self.icols.material[a] == self.icols.material[b]
+            && self.icols.quality[a] == self.icols.quality[b]
+            && self.icols.quantity[a] + self.icols.quantity[b] <= stack
+            && !self.reservations.is_reserved(ResKey::Item(from))
+            && !self.reservations.is_reserved(ResKey::Item(into));
+        if !fits {
+            return;
+        }
+        self.icols.quantity[b] += self.icols.quantity[a];
+        self.remove_haul(from);
+        if let Some(slot) = self.items.destroy(from) {
+            self.icols.swap_remove(slot);
+            self.item_index.remove(from.index);
+        }
+    }
+
+    /// Moves `amount` units of a stack on the ground into a new stack beside it.
+    fn split_stack(&mut self, item: ItemId, amount: u32) {
+        let Some(slot) = self.islot(item) else { return };
+        let ItemLocation::Ground(at) = self.icols.location[slot] else {
+            return;
+        };
+        let quantity = self.icols.quantity[slot];
+        if amount == 0 || amount >= quantity {
+            return;
+        }
+        let Some(id) = self.items.create() else {
+            return;
+        };
+        let (kind, material, quality) = (
+            self.icols.kind[slot],
+            self.icols.material[slot],
+            self.icols.quality[slot],
+        );
+        self.icols.quantity[slot] = quantity - amount;
+        self.icols.push(
+            ItemLocation::Ground(at),
+            kind,
+            material,
+            amount,
+            quality,
+            0,
+            None,
+        );
+        self.index_item(id);
+        self.ensure_haul(id);
+    }
+
     fn apply_ops(&mut self) {
         let mut ops = std::mem::replace(&mut self.ops, EntityCommandBuffer::with_capacity(0));
         ops.apply(|op| {
@@ -1741,17 +2037,18 @@ impl FortressSim {
                     }
                     self.scratch.occupied = spots;
                 }
-                Op::SpawnItem { at, kind, material } => {
-                    self.spawn_item(at, kind, material);
+                Op::SpawnItem {
+                    at,
+                    kind,
+                    material,
+                    quantity,
+                    quality,
+                } => {
+                    self.spawn_item(at, kind, material, quantity, quality);
                 }
-                Op::DespawnItem(item) => {
-                    self.remove_haul(item);
-                    self.reservations.release(ResKey::Item(item));
-                    if let Some(slot) = self.items.destroy(item) {
-                        self.icols.swap_remove(slot);
-                        self.item_index.remove(item.index);
-                    }
-                }
+                Op::DespawnItem(item) => self.despawn_item(item),
+                Op::Merge { from, into } => self.merge_stacks(from, into),
+                Op::Split { item, amount } => self.split_stack(item, amount),
                 Op::DespawnResident(id) => {
                     self.abort_task(id);
                     self.reservations.release_holder(id);
@@ -1789,6 +2086,8 @@ impl FortressSim {
                                     at,
                                     kind: ItemKind(self.content.ration),
                                     material: self.content.ration_material,
+                                    quantity: 1,
+                                    quality: 0,
                                 }),
                             );
                         }
@@ -1832,6 +2131,8 @@ impl Simulation for FortressSim {
                     at,
                     ItemKind(sim.content.ration),
                     sim.content.ration_material,
+                    1,
+                    0,
                 );
             }
         }

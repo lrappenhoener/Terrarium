@@ -49,6 +49,8 @@ sim_core::state_hash_enum!(DigMode, BuildKind);
 pub enum ItemLocation {
     Ground(Pos3),
     Carried(ResidentId),
+    /// Inside a container item; the position follows the container.
+    Inside(ItemId),
 }
 
 impl StateHash for ItemLocation {
@@ -62,9 +64,23 @@ impl StateHash for ItemLocation {
                 hash.write_u8(1);
                 id.state_hash(hash);
             }
+            Self::Inside(container) => {
+                hash.write_u8(2);
+                container.state_hash(hash);
+            }
         }
     }
 }
+
+/// Units of one item kind that came into and left the world. The live units of a
+/// kind always equal `produced - removed`; splitting and merging stacks keep both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ledger {
+    pub produced: u64,
+    pub removed: u64,
+}
+
+sim_core::state_hash_struct!(Ledger { produced, removed });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobKind {
@@ -295,8 +311,21 @@ pub enum Op {
         at: Pos3,
         kind: ItemKind,
         material: u16,
+        quantity: u32,
+        quality: u8,
     },
     DespawnItem(ItemId),
+    /// Moves all units of `from` onto the compatible stack `into`.
+    Merge {
+        from: ItemId,
+        into: ItemId,
+    },
+    #[allow(dead_code, reason = "used by production and tests")]
+    /// Moves `amount` units of a stack into a new stack on the same tile.
+    Split {
+        item: ItemId,
+        amount: u32,
+    },
     DespawnResident(ResidentId),
 }
 

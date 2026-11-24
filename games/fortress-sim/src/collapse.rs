@@ -178,6 +178,8 @@ impl FortressSim {
                         at: landing,
                         kind: ItemKind(kind),
                         material,
+                        quantity: 1,
+                        quality: 0,
                     }),
                 );
             }

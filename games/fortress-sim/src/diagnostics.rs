@@ -206,6 +206,7 @@ impl FortressSim {
                 self.icols.hash_row(slot, &mut items);
             }
         }
+        self.ledger.state_hash(&mut items);
 
         let mut jobs = StateHasher::new();
         jobs.write_u64(self.jobs.next_id());
@@ -345,6 +346,7 @@ impl FortressSim {
             }
         }
         let mut stock = vec![0u32; self.stockpiles.len()];
+        let mut units = vec![0u64; self.ledger.len()];
         for id in self.items.iter_by_id() {
             let Some(slot) = self.islot(id) else {
                 return fail("live item without slot");
@@ -366,7 +368,46 @@ impl FortressSim {
                         stock[index] += 1;
                     }
                 }
+                ItemLocation::Inside(container) => {
+                    let Some(cslot) = self.islot(container) else {
+                        return fail("item inside a missing container");
+                    };
+                    let capacity = self
+                        .content
+                        .item(self.icols.kind[cslot].0)
+                        .map_or(0, |d| u32::from(d.capacity));
+                    if capacity == 0 {
+                        return fail("item inside a non-container");
+                    }
+                    if matches!(self.icols.location[cslot], ItemLocation::Inside(_)) {
+                        return fail("containers are nested");
+                    }
+                    if self.contents.parent(id.index) != Some(container.index) {
+                        return fail("container membership differs from item locations");
+                    }
+                    if self.contents.count(container.index) > capacity {
+                        return fail("container holds more items than its capacity");
+                    }
+                }
             }
+            if !matches!(self.icols.location[slot], ItemLocation::Inside(_))
+                && self.contents.parent(id.index).is_some()
+            {
+                return fail("item outside a container keeps a membership");
+            }
+            let Some(def) = self.content.item(self.icols.kind[slot].0) else {
+                return fail("item of unknown kind");
+            };
+            let quantity = self.icols.quantity[slot];
+            if quantity == 0 || quantity > def.stack {
+                return fail("stack quantity outside 1..=stack size");
+            }
+            if self.icols.quality[slot] > crate::MAX_QUALITY
+                || self.icols.wear[slot] > def.durability.max(1)
+            {
+                return fail("quality or wear out of range");
+            }
+            units[usize::from(self.icols.kind[slot].0)] += u64::from(quantity);
             if let Some(job) = self.icols.haul[slot]
                 && !self
                     .jobs
@@ -380,12 +421,9 @@ impl FortressSim {
         let mut indexed = vec![0u32; categories];
         for id in self.items.iter_by_id() {
             let Some(slot) = self.islot(id) else { continue };
-            let expected = match self.icols.location[slot] {
-                ItemLocation::Ground(p) => {
-                    Some((id, p, self.content.category_of(self.icols.kind[slot].0)))
-                }
-                ItemLocation::Carried(_) => None,
-            };
+            let expected = self
+                .item_ground(id)
+                .map(|p| (id, p, self.content.category_of(self.icols.kind[slot].0)));
             if self.item_index.get(id.index) != expected {
                 return fail("item index differs from item locations");
             }
@@ -395,6 +433,14 @@ impl FortressSim {
         }
         if (0..categories).any(|kind| self.item_index.count(kind as u8) != indexed[kind]) {
             return fail("item index counts differ");
+        }
+        if self
+            .ledger
+            .iter()
+            .zip(&units)
+            .any(|(entry, &live)| entry.produced.checked_sub(entry.removed) != Some(live))
+        {
+            return fail("live item units differ from produced minus removed");
         }
         if stock.iter().any(|&count| count > 1) {
             return fail("stockpile tile holds more than one item");

@@ -413,6 +413,12 @@ impl<M> EntityTable<M> {
         self.by_slot.get(slot as usize).copied()
     }
 
+    /// The live ID with allocator index `index`, if any.
+    pub fn id_at(&self, index: u32) -> Option<TypedId<M>> {
+        let &slot = self.by_index.get(index as usize)?;
+        self.by_slot.get(slot as usize).copied()
+    }
+
     pub fn is_alive(&self, id: TypedId<M>) -> bool {
         self.slot(id).is_some()
     }

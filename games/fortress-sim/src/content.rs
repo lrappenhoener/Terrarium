@@ -907,6 +907,15 @@ impl GameContent {
         self.item(item).map_or(0, |d| d.category)
     }
 
+    /// Bit mask of `category` and all categories below it.
+    pub fn descendants(&self, category: u8) -> u64 {
+        self.categories
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.ancestors & (1 << category) != 0)
+            .fold(0, |mask, (i, _)| mask | 1 << i)
+    }
+
     /// Whether item kind `item` matches an ingredient.
     pub fn accepts(&self, input: &Input, item: u16) -> bool {
         let Some(def) = self.item(item) else {
