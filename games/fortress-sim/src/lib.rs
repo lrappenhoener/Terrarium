@@ -7,6 +7,7 @@ mod collapse;
 mod config;
 pub mod content;
 mod diagnostics;
+mod economy;
 mod fluids;
 mod orders;
 mod plants;
@@ -278,6 +279,7 @@ pub struct FortressSim {
     counters: Counters,
     diag: Diagnostics,
     scratch: Scratch,
+    economy: economy::Economy,
     load_warnings: Vec<String>,
 }
 
@@ -563,6 +565,7 @@ impl FortressSim {
             },
             scratch: Scratch::new(&config),
             load_warnings: Vec::new(),
+            economy: economy::Economy::new(),
             world,
             config,
             content,
@@ -769,16 +772,16 @@ impl FortressSim {
         quantity: u32,
         quality: u8,
     ) -> Option<ItemId> {
-        // Stockpile slots hold one item; spawns there move like drops.
-        let at = if self.is_stockpile(at) {
-            self.drop_position(at)
-        } else {
-            at
-        };
         let stack = self.content.item(kind.0).map_or(1, |d| d.stack).max(1);
         let mut first = None;
         let mut left = quantity.max(1);
         while left > 0 {
+            // Stockpile tiles hold one item; each stack spawned there moves like a drop.
+            let at = if self.is_stockpile(at) {
+                self.drop_position(at)
+            } else {
+                at
+            };
             let units = left.min(stack);
             let Some(id) = self.items.create() else { break };
             self.icols.push(
@@ -997,17 +1000,18 @@ impl FortressSim {
             content::Ingredient::Category(c) => self.content.descendants(c),
             content::Ingredient::Item(kind) => 1 << self.content.category_of(kind),
         };
-        self.item_index
-            .nearest_any(at, categories, self.search_limits(), |item, p| {
-                self.islot(item).is_some_and(|slot| {
-                    self.content.accepts(input, self.icols.kind[slot].0)
-                        && material.is_none_or(|m| self.icols.material[slot] == m)
-                }) && !skip.contains(&item)
-                    && !self.reservations.is_reserved(ResKey::Item(item))
-                    && self.connectivity.reachable(at, p)
-            })
-            .found
-            .map(|(distance, item, _)| (distance, item))
+        let result =
+            self.item_index
+                .nearest_any(at, categories, self.search_limits(), |item, p| {
+                    self.islot(item).is_some_and(|slot| {
+                        self.content.accepts(input, self.icols.kind[slot].0)
+                            && material.is_none_or(|m| self.icols.material[slot] == m)
+                    }) && !skip.contains(&item)
+                        && !self.reservations.is_reserved(ResKey::Item(item))
+                        && self.connectivity.reachable(at, p)
+                });
+        self.note_index_query(result.cells, result.candidates);
+        result.found.map(|(distance, item, _)| (distance, item))
     }
 
     /// Ground tile of an item, or of the container on the ground that holds it.
@@ -1969,7 +1973,7 @@ impl FortressSim {
                                 }),
                             );
                         }
-                        self.jobs.complete(job);
+                        self.complete_job(job);
                         self.counters.dug += 1;
                         self.counters.completed_jobs += 1;
                         self.release_and_idle(slot, id);
@@ -1998,7 +2002,7 @@ impl FortressSim {
                         if let Some(islot) = self.islot(item) {
                             self.icols.haul[islot] = None;
                         }
-                        self.jobs.complete(job);
+                        self.complete_job(job);
                         self.counters.hauled += 1;
                         self.counters.completed_jobs += 1;
                         self.release_and_idle(slot, id);
@@ -2061,7 +2065,7 @@ impl FortressSim {
                             0,
                             EntityCommand::Spawn(Op::DespawnItem(item)),
                         );
-                        self.jobs.complete(job);
+                        self.complete_job(job);
                         self.counters.built += 1;
                         self.counters.completed_jobs += 1;
                         self.release_and_idle(slot, id);
@@ -2486,6 +2490,7 @@ impl Simulation for FortressSim {
         phase(probe, "collapse", || self.collapse_step());
         phase(probe, "lifecycle", || self.lifecycle());
         phase(probe, "environment", || self.environment());
+        self.economy.note_jobs(self.jobs.next_id(), self.tick);
         self.tick = self.tick.saturating_add(1);
     }
 
@@ -2551,6 +2556,8 @@ impl Simulation for FortressSim {
             ("active_fluid_tiles", self.diag.fluid_last_tiles),
             ("active_heat_tiles", self.diag.heat_last_tiles),
             ("support_checks", self.diag.support_last_units),
+            ("plants", self.plants.len() as u64),
+            ("workshops", self.workshops.len() as u64),
         ]
     }
 
@@ -2569,6 +2576,8 @@ impl Simulation for FortressSim {
             ("temperature", "active_heat_tiles"),
             ("support", "support_checks"),
             ("collapse", "support_checks"),
+            ("plants", "plants"),
+            ("orders", "workshops"),
         ]
     }
 

@@ -1906,3 +1906,114 @@ fn times_orders_end_cancel_aborts_and_repeat_uses_every_workshop() {
     let crafting = (0..sim.rcols.len()).any(|s| matches!(sim.rcols.task[s], Task::Craft { .. }));
     assert!(!crafting, "workers of a cancelled order abort");
 }
+
+const GOLDEN_INDUSTRY: u64 = 0x74c919f28b75e9c6;
+
+#[test]
+fn industry_is_deterministic_shuffle_neutral_and_golden() {
+    let hashes = shuffled_matches_ordered("scenario_industry.toml", 3000);
+    assert_eq!(hashes[2999], GOLDEN_INDUSTRY, "{:#018x}", hashes[2999]);
+}
+
+fn units_in_category(sim: &FortressSim, category: &str) -> u64 {
+    let c = GameContent::id_of(&sim.content.ids.categories, category).unwrap() as u8;
+    sim.ledger
+        .iter()
+        .enumerate()
+        .filter(|(kind, _)| sim.content.category_of(*kind as u16) == c)
+        .map(|(_, l)| l.produced - l.removed)
+        .sum()
+}
+
+#[test]
+fn the_industry_makes_tools_and_feeds_itself_without_caravans() {
+    let schedule = scenario_file("scenario_industry.toml");
+    let config = FortressConfig {
+        caravan: false,
+        ..FortressConfig::default()
+    };
+    let mut sim = FortressSim::new(42, config).unwrap();
+    let mut food_at_half = 0;
+    run_with_scenario(&mut sim, &schedule, 20_000, |sim| {
+        if sim.tick() % 500 == 0 {
+            sim.check_invariants().unwrap();
+        }
+        if sim.tick() == 10_000 {
+            food_at_half = units_in_category(sim, "food");
+        }
+    });
+    let tools = units_in_category(&sim, "tool");
+    assert!(tools >= 12, "tools {tools}");
+    assert_eq!(sim.counters.deaths[Death::Hunger as usize], 0);
+    assert_eq!(sim.counters.caravans, 0);
+    let food = units_in_category(&sim, "food");
+    assert!(
+        food >= 100 && food > food_at_half,
+        "food {food_at_half} -> {food}"
+    );
+    let food_category = sim.content.food;
+    let (mut produced, mut removed) = (0, 0);
+    for (kind, ledger) in sim.ledger.iter().enumerate() {
+        if sim.content.category_of(kind as u16) == food_category {
+            produced += ledger.produced;
+            removed += ledger.removed;
+        }
+    }
+    assert!(
+        produced > removed,
+        "farms and kitchen outpace eating: {produced} > {removed}"
+    );
+}
+
+#[test]
+fn save_load_mid_production_preserves_every_following_tick() {
+    let schedule = scenario_file("scenario_industry.toml");
+    let mut continuous = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let mut interrupted = FortressSim::new(42, FortressConfig::default()).unwrap();
+    let (mut carrying, mut working, mut filled, mut bulk) = (0, 0, 0, 0);
+    let mut roundtrips = 0;
+    for _ in 0..5000 {
+        let tick = continuous.tick();
+        let commands = schedule
+            .iter()
+            .find(|(t, _)| *t == tick)
+            .map_or(&[][..], |(_, c)| c.as_slice());
+        continuous.step(commands);
+        interrupted.step(commands);
+        let sim = &interrupted;
+        let carry =
+            (0..sim.rcols.len()).any(|s| matches!(sim.rcols.task[s], Task::Craft { stage: 1, .. }));
+        let work = (0..sim.rcols.len()).any(|s| {
+            matches!(sim.rcols.task[s], Task::Craft { stage: 2, .. }) && sim.rcols.work[s] > 1
+        });
+        let full = sim
+            .items
+            .iter_by_id()
+            .any(|id| sim.contents.count(id.index) > 0);
+        let hauling = (0..sim.rcols.len())
+            .any(|s| matches!(sim.rcols.task[s], Task::BulkHaul { stage: 1 | 3, .. }));
+        let due = (carry && carrying < 4)
+            || (work && working < 4)
+            || (full && filled < 2)
+            || (hauling && bulk < 2);
+        if due {
+            carrying += usize::from(carry);
+            working += usize::from(work);
+            filled += usize::from(full);
+            bulk += usize::from(hauling);
+            interrupted = roundtrip(&interrupted);
+            roundtrips += 1;
+        }
+        assert_eq!(
+            continuous.state_hash(),
+            interrupted.state_hash(),
+            "tick {}",
+            continuous.tick()
+        );
+    }
+    assert!(
+        carrying > 0 && working > 0 && filled > 0,
+        "{carrying} {working} {filled}"
+    );
+    assert!(roundtrips >= 8, "roundtrips {roundtrips}");
+}

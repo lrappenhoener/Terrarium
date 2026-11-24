@@ -147,7 +147,9 @@ impl FortressSim {
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value))
-        .collect();
+        .collect::<Vec<(String, f64)>>();
+        let mut custom_gauges = custom_gauges;
+        self.economy_gauges(&mut custom_gauges);
         SimMetrics {
             active_entities: self.residents.len() + self.items.len(),
             custom_gauges,

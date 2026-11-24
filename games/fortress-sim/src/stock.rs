@@ -255,7 +255,12 @@ impl FortressSim {
         if radius == 0 || self.content.bulk_categories == 0 {
             return None;
         }
-        let zone = self.slot_index(dest).and_then(|s| self.zone_of_slot(s))?;
+        let dest_slot = self.slot_index(dest)?;
+        // The container itself needs the tile.
+        if self.slot_items[dest_slot] != 0 {
+            return None;
+        }
+        let zone = self.zone_of_slot(dest_slot)?;
         let islot = self.islot(lead)?;
         if self.is_container(islot) {
             return None;
@@ -372,7 +377,7 @@ impl FortressSim {
                 if let Some(s) = self.islot(lead) {
                     self.icols.haul[s] = None;
                 }
-                self.jobs.complete(job);
+                self.complete_job(job);
                 self.counters.hauled += u64::from(moved);
                 self.counters.completed_jobs += 1;
                 true

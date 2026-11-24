@@ -353,3 +353,50 @@ commands = [{SpawnAnimals = {species = "Herbivore", count = 4}}]
     }
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn fortress_replays_with_changed_content_are_rejected() {
+    let dir = std::env::temp_dir().join(format!("terrarium-content-cli-{}", std::process::id()));
+    let mods = dir.join("mod");
+    fs::create_dir_all(&mods).unwrap();
+    let material = "[[material]]\nid = \"marble\"\nclass = \"rock\"\ndig_ticks = 22\ndig_item = \"stone\"\nvalue = 4\n";
+    fs::write(mods.join("marble.toml"), material).unwrap();
+    let cfg = dir.join("config.toml");
+    fs::write(
+        &cfg,
+        format!(
+            "world_size_xy = 32\nworld_depth = 12\nground_level = 5\nmountain_center_x = 16\nmountain_center_y = 16\nmountain_radius = 8\nmountain_height = 4\nembark_x = 2\nembark_y = 2\ninitial_residents = 2\nmods = [{:?}]\n\n[physics]\nriver = false\nmagma_sea = false\n",
+            mods.display().to_string()
+        ),
+    )
+    .unwrap();
+    let replay = dir.join("fortress.simr");
+    let record = cli()
+        .args(["--game", "fortress", "--ticks", "20", "--record-replay"])
+        .arg(&replay)
+        .arg("--config")
+        .arg(&cfg)
+        .output()
+        .unwrap();
+    assert!(
+        record.status.success(),
+        "{}",
+        String::from_utf8_lossy(&record.stderr)
+    );
+    let same = cli().arg("--replay").arg(&replay).output().unwrap();
+    assert!(
+        same.status.success(),
+        "{}",
+        String::from_utf8_lossy(&same.stderr)
+    );
+    fs::write(
+        mods.join("marble.toml"),
+        material.replace("value = 4", "value = 5"),
+    )
+    .unwrap();
+    let changed = cli().arg("--replay").arg(&replay).output().unwrap();
+    assert!(!changed.status.success());
+    let stderr = String::from_utf8_lossy(&changed.stderr);
+    assert!(stderr.contains("content fingerprint differs"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}

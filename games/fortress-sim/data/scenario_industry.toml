@@ -1,0 +1,47 @@
+# Seed 42, default world. An economy from wood to tools and a food supply from
+# farms and a kitchen. Residents fell the trees on the plain west of the mountain,
+# tunnel east at z=14, take a stair down to an ore gallery at z=12 and dig a room
+# for mushroom farms. Six workshops stand on the plain at z=14; work orders keep
+# charcoal, bars, tools, barrels, blocks and stew coming.
+
+[[schedule]]
+tick = 0
+commands = [
+    { DesignateStockpile = { from = { x = 1, y = 24, z = 14 }, to = { x = 11, y = 43, z = 14 } } },
+    { DesignateFelling = { from = { x = 0, y = 0, z = 14 }, to = { x = 11, y = 95, z = 14 } } },
+    { DesignateDig = { from = { x = 14, y = 47, z = 14 }, to = { x = 30, y = 49, z = 14 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 22, y = 50, z = 14 }, to = { x = 30, y = 54, z = 14 }, mode = "Dig" } },
+    { DesignateDig = { from = { x = 31, y = 48, z = 14 }, to = { x = 31, y = 48, z = 14 }, mode = "StairDown" } },
+    { DesignateDig = { from = { x = 31, y = 48, z = 13 }, to = { x = 31, y = 48, z = 13 }, mode = "StairUpDown" } },
+    { DesignateDig = { from = { x = 31, y = 48, z = 12 }, to = { x = 31, y = 48, z = 12 }, mode = "StairUp" } },
+    { DesignateDig = { from = { x = 32, y = 40, z = 12 }, to = { x = 39, y = 51, z = 12 }, mode = "Dig" } },
+    { PlaceWorkshop = { kind = "kiln", pos = { x = 1, y = 52, z = 14 } } },
+    { PlaceWorkshop = { kind = "smelter", pos = { x = 5, y = 52, z = 14 } } },
+    { PlaceWorkshop = { kind = "forge", pos = { x = 9, y = 52, z = 14 } } },
+    { PlaceWorkshop = { kind = "carpenter", pos = { x = 1, y = 56, z = 14 } } },
+    { PlaceWorkshop = { kind = "mason", pos = { x = 5, y = 56, z = 14 } } },
+    { PlaceWorkshop = { kind = "kitchen", pos = { x = 9, y = 56, z = 14 } } },
+    { DesignateFarm = { from = { x = 1, y = 60, z = 14 }, to = { x = 11, y = 63, z = 14 }, crop = "barley" } },
+]
+
+[[schedule]]
+tick = 100
+commands = [
+    { AddWorkOrder = { recipe = "burn_charcoal", amount = 30, condition = "UntilStock" } },
+    { AddWorkOrder = { recipe = "smelt_ore", amount = 0, condition = "Repeat" } },
+    { AddWorkOrder = { recipe = "forge_pick", amount = 8, condition = "Times" } },
+    { AddWorkOrder = { recipe = "forge_axe", amount = 6, condition = "Times" } },
+    { AddWorkOrder = { recipe = "wooden_barrel", amount = 4, condition = "Times" } },
+    { AddWorkOrder = { recipe = "wooden_bed", amount = 4, condition = "Times" } },
+    { AddWorkOrder = { recipe = "cut_blocks", amount = 20, condition = "UntilStock" } },
+    { AddWorkOrder = { recipe = "cook_stew", amount = 20, condition = "UntilStock" } },
+]
+
+# Farms in the dug room once it exists; food and seeds get their own zone.
+[[schedule]]
+tick = 3000
+commands = [
+    { DesignateFarm = { from = { x = 22, y = 50, z = 14 }, to = { x = 30, y = 54, z = 14 }, crop = "cave_mushroom" } },
+    { DesignateStockpile = { from = { x = 1, y = 66, z = 14 }, to = { x = 11, y = 70, z = 14 } } },
+    { ConfigureStockpile = { zone = 1, categories = ["food", "seed"], materials = [], priority = 5, containers = true } },
+]

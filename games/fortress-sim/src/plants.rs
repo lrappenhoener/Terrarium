@@ -354,7 +354,7 @@ impl FortressSim {
         } else {
             self.counters.harvested += 1;
         }
-        self.jobs.complete(job);
+        self.complete_job(job);
         self.counters.completed_jobs += 1;
         true
     }
@@ -414,7 +414,7 @@ impl FortressSim {
         self.gain_experience(slot, skill, base);
         self.counters.sown += 1;
         // The plot keeps the finished job until the plant exists at the tick end.
-        self.jobs.complete(job);
+        self.complete_job(job);
         self.counters.completed_jobs += 1;
         true
     }

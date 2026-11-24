@@ -261,7 +261,7 @@ impl FortressSim {
                         self.counters.workshops_built += 1;
                     }
                 }
-                self.jobs.complete(job);
+                self.complete_job(job);
                 self.counters.completed_jobs += 1;
                 true
             }
